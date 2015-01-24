@@ -14,9 +14,10 @@
 #include <sys/stat.h>  /*File information (stat et al) */
 #include <fcntl.h>     /*File opening, locking and other operations */
 #include <unistd.h>
-#include <errno.h>     /*For errno access */
-#include <stdint.h>	   /*unitN_t macros */
+#include <errno.h>     /*For errno */
+#include <stdint.h>    /*unitN_t */
 #include <string.h>
+#include <inttypes.h> /*for (u)int64_t format specifiers PRId64 and PRIu64 */
 #include "NTFSStruct.h"
 
 #define P_PARTITIONS 4
@@ -54,16 +55,61 @@ int getPartitionInfo(char *buff, PARTITION *part) {
 				  part->dwRelativeSector,
 				  part->dwNumberSector,
 				  part->dwNumberSector/2097152.0);
-	if(part->chType == 0x07) {
+	if(part->chType == 0x07)
 		return part->dwRelativeSector;
-
-	}
 	return -1;
 }
 
+/**
+ *	Prints the members of *bootSec into *buff
+ *	Returns -1 if error.
+ */
+int getBootSectInfo(char* buff, NTFS_BOOT_SECTOR *bootSec) {
+	sprintf(buff, "jumpInstruction: %s\n"
+				  "OEM ID: %s\n"
+				  "BIOS Parameter Block(BPB) data: \n"
+				  "Bytes per logical sector: %u\n"
+				  "Logical sectors per cluster: %u\n"
+				  "Reserved logical sectors: %u\n"
+				  "Media descriptor: %d\n"
+				  "Physical sectors per track: %u\n"
+				  "Number of heads: %u\n"
+				  "Hidden sectors: %d\n"
+				  "Sectors in volume: %" PRId64 "\n"
+				  "\n*Cluster number for MFT: %" PRId64 "\n"
+				  "Mirror of cluster number for MFT: %" PRId64 "\n"
+				  "MFT record size: %d\n"
+				  "Index block size: %d\n"
+				  "\nVolume serial number: %" PRId64 "\n"
+				  "Volume checksum: %d\n"
+				  "End of sector marker: %u\n",
+				  bootSec->chJumpInstruction,
+				  bootSec->chOemID,
+				  (bootSec->bpb).wBytesPerSec,
+				  (bootSec->bpb).uchSecPerClust,
+				  (bootSec->bpb).wReservedSec,
+				  (bootSec->bpb).uchMediaDescriptor,
+				  (bootSec->bpb).wSecPerTrack,
+				  (bootSec->bpb).wNumberOfHeads,
+				  (bootSec->bpb).dwHiddenSec,
+				  (bootSec->bpb).n64TotalSec,
+				  (bootSec->bpb).n64MFTLogicalClustNum,	/*Cluster number for MFT! */
+				  (bootSec->bpb).n64MFTMirrLoficalClustNum,
+				  (bootSec->bpb).nClustPerMFTRecord,
+				  (bootSec->bpb).nClustPerIndexRecord,
+				  (bootSec->bpb).n64VolumeSerialNum,
+				  (bootSec->bpb).dwCheckSum,
+				  bootSec->wSecMark );
+	return 0;
+}
+
 int main(int argc, char* argv[]) {
+	int fileDescriptor = 0;
+	off_t blk_offset = 0;
+	ssize_t readStatus, bsFound = -1;
+	char* buff = malloc(512);	/*Used for getPartitionInfo(...), getBootSectinfo(...) */
 	printf("Launching raw NTFS extraction engine for %s\n", BLOCK_DEVICE);
-	int fileDescriptor;
+
 	fileDescriptor = open(BLOCK_DEVICE, O_RDONLY); /*Open block device and check if failed */
 	if(fileDescriptor == -1) { /* open failed. */
 		int errsv = errno;
@@ -71,15 +117,11 @@ int main(int argc, char* argv[]) {
 		return EXIT_FAILURE;
 	}
 
-	off_t blk_offset = 0;
 	if((blk_offset = lseek(fileDescriptor, P_OFFEST, SEEK_SET)) == -1) { /*Set offest pointer to partition table */
 		int errsv = errno;
 		printf("Failed to position file pointer to partition table with error: %s.\n", strerror(errsv));
 		return EXIT_FAILURE;
 	}
-
-	ssize_t readStatus;
-	char* buff = malloc(256); /*Used for getPartitionInfo(...) */
 
 	/*--------------------- Read in primary partitions from MBR ---------------------*/
 	PARTITION **priParts = malloc( P_PARTITIONS*sizeof(PARTITION) );
@@ -103,19 +145,42 @@ int main(int argc, char* argv[]) {
 	/*--- Follow relative sector offset of NTFS partitions to find boot sector ----*/
 	NTFS_BOOT_SECTOR *nTFS_Boot = malloc( sizeof(NTFS_BOOT_SECTOR) );	/*Allocate memory for holding the boot sector code*/
 	for(i = 0; i<nNTFS; i++) {
-		/*Set offest pointer to partition table */
-		if((blk_offset = lseek(fileDescriptor, nTFSParts[i]->dwRelativeSector*SECTOR_SIZE, SEEK_SET)) == -1) {
-			int errsv = errno;
-			printf("Failed to position file pointer to NTFS boot sector with error: %s.\n", strerror(errsv));
-			return EXIT_FAILURE;
-		}
-		if((readStatus = read( fileDescriptor, nTFS_Boot, sizeof(NTFS_BOOT_SECTOR))) == -1){
-			int errsv = errno;
-			printf("Failed to open NTFS Boot sector for partition %d with error: %s.\n",i , strerror(errsv));
-		} else {
-			/* Do something with the boot sector code */
+		if(nTFSParts[i]->chBootInd == 0x80) { /*If this is a Bootable NTFS partition*/
+			/*Set offest pointer to partition table */
+			if((blk_offset = lseek(fileDescriptor, nTFSParts[i]->dwRelativeSector*SECTOR_SIZE, SEEK_SET)) == -1) {
+				int errsv = errno;
+				printf("Failed to position file pointer to NTFS boot sector with error: %s.\n", strerror(errsv));
+				return EXIT_FAILURE;
+			}
+			if((readStatus = read( fileDescriptor, nTFS_Boot, sizeof(NTFS_BOOT_SECTOR))) == -1){
+				int errsv = errno;
+				printf("Failed to open NTFS Boot sector for partition %d with error: %s.\n",i , strerror(errsv));
+			} else {
+				bsFound = i;/* Set BS found flag and which partition it's in */
+			}
 		}
 	}
+
+	/*------ If NTFS boot sector found then use it to find Master File Table -----*/
+	if(bsFound >= -1) {
+		getBootSectInfo(buff, nTFS_Boot);
+		printf("\nNTFS boot sector data\n%s\n", buff);
+		/*Calculate the number of bytes per sector = sectors per cluster * bytes per sector */
+		uint32_t dwBytesPerCluster = (nTFS_Boot->bpb.uchSecPerClust) * (nTFS_Boot->bpb.wBytesPerSec);
+		printf("Filesystem Bytes Per Sector: %d\n", dwBytesPerCluster);
+		/*Calculate the number of bytes by which the boot sector is offset on disk */
+		uint64_t u64bytesAbsoluteSector = (nTFS_Boot->bpb.wBytesPerSec) * (nTFSParts[bsFound]->dwRelativeSector);
+		printf("Bootsector offset in bytes: %" PRIu64 "\n", u64bytesAbsoluteSector );
+		/*Calculate the relative bytes location of the MFT on the partition */
+		uint64_t u64bytesRelativeMFT = dwBytesPerCluster * (nTFS_Boot->bpb.n64MFTLogicalClustNum);
+		printf("Relative bytes location of MFT: %" PRIu64 "\n", u64bytesRelativeMFT);
+		/*Absolute MFT offset in bytes*/
+		uint64_t u64bytesAbsoluteMFT = u64bytesAbsoluteSector + u64bytesRelativeMFT;
+		printf("Absolute MFT location in bytes: %" PRIu64 "\n", u64bytesAbsoluteMFT);
+	}
+
+	/* Find the root directory metafile entry in the MFT, and extract its index allocation attributes */
+
 
 	/*---------------------------------- Tidy up ----------------------------------*/
 	for(i = 0; i<P_PARTITIONS; i++) {

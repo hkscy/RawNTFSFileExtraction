@@ -20,28 +20,28 @@ typedef unsigned char BYTE; /*Define byte symbolic abbreviation */
 		char	chDummy[4];
 
 		struct NTFS_BPB	{ /*BIOS Parameter block, provides information that enables the executable boot code to locate Ntldr */
-			uint16_t	wBytesPerSec;
-			BYTE		uchSecPerClust;
-			uint16_t	wReservedSec;
-			BYTE		uchReserved[3];
+			uint16_t	wBytesPerSec;		/*Bytes per logical sector */
+			BYTE		uchSecPerClust;		/*Logical sectors per cluster */
+			uint16_t	wReservedSec;		/*Reserved logical sectors */
+			BYTE		uchReserved[3];		/*Number of FATs[0], Root directory entries[1,2] */
 			uint16_t	wUnused1;
-			BYTE		uchMediaDescriptor;
+			BYTE		uchMediaDescriptor;	/*Media descriptor */
 			uint16_t	wUnused2;
-			uint16_t	wSecPerTrack;
-			uint16_t	wNumberOfHeads;
-			uint32_t	dwHiddenSec;
+			uint16_t	wSecPerTrack;		/*Physical sectors per track */
+			uint16_t	wNumberOfHeads;		/*Number of heads */
+			uint32_t	dwHiddenSec;		/*Hidden sectors  */
 			uint32_t	dwUnused3;
 			uint32_t	dwUnused4;
-			int64_t		n64TotalSec;
-			int64_t		n64MFTLogicalClustNum;	/*Cluster number for MFT! */
-			int64_t		n64MFTMirrLoficalClustNum;
-			int			nClustPerMFTRecord;
-			int			nClustPerIndexRecord;
-			int64_t		n64VolumeSerialNum;
-			uint32_t	dwCheckSum;					/*Always 0x55AA, marks end of boot sector */
+			int64_t		n64TotalSec;				/*Sectors in volume */
+			int64_t		n64MFTLogicalClustNum;		/*Cluster number for MFT! */
+			int64_t		n64MFTMirrLoficalClustNum;	/*MFT mirror first cluster number */
+			int			nClustPerMFTRecord;			/*MFT record size */
+			int			nClustPerIndexRecord;		/*Index block size */
+			int64_t		n64VolumeSerialNum;			/*Volume serial number */
+			uint32_t	dwCheckSum;
 		} bpb;
 
 		char		chBootStrapCode[426];
-		uint16_t	wSecMark;
+		uint16_t	wSecMark;				/*Always 0x55AA, marks end of boot sector */
 	} NTFS_BOOT_SECTOR, *P_NTFS_BOOT_SECTOR;
 #pragma pack(pop)
