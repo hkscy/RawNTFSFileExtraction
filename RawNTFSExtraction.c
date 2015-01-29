@@ -20,10 +20,14 @@
 #include <inttypes.h> /*for (u)int64_t format specifiers PRId64 and PRIu64 */
 #include "NTFSStruct.h"
 
+#define FALSE 0
+#define TRUE 1
+#define BUFFSIZE 512
 #define P_PARTITIONS 4
 #define SECTOR_SIZE 512
 #define P_OFFEST 0x1BE	/*Partition information begins at offest 0x1BE */
 #define NTFS_TYPE 0x07	/*NTFS partitions are represented by 0x07 in the partition table */
+#define MFT_RECORD_LENGTH 1024 /*MFT entries are 1024 bytes long */
 
 static const char BLOCK_DEVICE[] = "/dev/mechastriessand/windows7";
 
@@ -103,11 +107,48 @@ int getBootSectInfo(char* buff, NTFS_BOOT_SECTOR *bootSec) {
 	return 0;
 }
 
+int getMFTAttribMembers(char * buff, NTFS_ATTRIBUTE* attrib) {
+	char* tempBuff = malloc(BUFFSIZE);
+	sprintf(tempBuff, "Attribute type: %d\n"
+				  	  "Length of attribute: %d\n"
+				  	  "Non-resident flag: %s\n"
+				  	  "Length of name: %u\n"
+				  	  "Offset to name: %u\n"
+				  	  "Flags: %u\n"
+				  	  "Attribute identifier: %u\n",
+					  attrib->dwType,
+					  attrib->dwFullLength,
+					  attrib->uchNonResFlag == TRUE ? "Non-Resident" : "Resident",
+					  attrib->uchNameLength,
+					  attrib->wNameOffset,
+					  attrib->wFlags,
+					  attrib->wID);
+	if(attrib->uchNonResFlag) { /*If attribute is Non-Resident*/
+		sprintf(buff, "%s", tempBuff);
+		//(attrib->Attr).NonResident;
+
+	} else{ /*Attribute is resident */
+		sprintf(buff, "%s"
+				"Length of attribute content: %d\n"
+				"Offset to attribute content: %u\n"
+				"Indexed: %u\n"
+				"Padding: %u\n",
+				tempBuff,
+				(attrib->Attr).Resident.dwLength,
+				(attrib->Attr).Resident.wAttrOffset,
+				(attrib->Attr).Resident.uchIndexedTag,
+				(attrib->Attr).Resident.uchPadding);
+	}
+	return 0;
+}
+
 int main(int argc, char* argv[]) {
 	int fileDescriptor = 0;
 	off_t blk_offset = 0;
 	ssize_t readStatus, bsFound = -1;
-	char* buff = malloc(512);	/*Used for getPartitionInfo(...), getBootSectinfo(...) */
+	uint64_t u64bytesAbsoluteMFT = -1;
+	char* buff = malloc(BUFFSIZE);	/*Used for getPartitionInfo(...), getBootSectinfo(...) et al*/
+	char* mftBuffer = malloc(MFT_RECORD_LENGTH); /*Buffer an entire MFT Record here*/
 	printf("Launching raw NTFS extraction engine for %s\n", BLOCK_DEVICE);
 
 	fileDescriptor = open(BLOCK_DEVICE, O_RDONLY); /*Open block device and check if failed */
@@ -162,7 +203,7 @@ int main(int argc, char* argv[]) {
 	}
 
 	/*------ If NTFS boot sector found then use it to find Master File Table -----*/
-	if(bsFound >= -1) {
+	if(bsFound > -1) {
 		getBootSectInfo(buff, nTFS_Boot);
 		printf("\nNTFS boot sector data\n%s\n", buff);
 		/*Calculate the number of bytes per sector = sectors per cluster * bytes per sector */
@@ -175,11 +216,50 @@ int main(int argc, char* argv[]) {
 		uint64_t u64bytesRelativeMFT = dwBytesPerCluster * (nTFS_Boot->bpb.n64MFTLogicalClustNum);
 		printf("Relative bytes location of MFT: %" PRIu64 "\n", u64bytesRelativeMFT);
 		/*Absolute MFT offset in bytes*/
-		uint64_t u64bytesAbsoluteMFT = u64bytesAbsoluteSector + u64bytesRelativeMFT;
+		u64bytesAbsoluteMFT = u64bytesAbsoluteSector + u64bytesRelativeMFT;
 		printf("Absolute MFT location in bytes: %" PRIu64 "\n", u64bytesAbsoluteMFT);
 	}
 
 	/* Find the root directory metafile entry in the MFT, and extract its index allocation attributes */
+	NTFS_MFT_FILE_ENTRY_HEADER *firstMFTHeader;// = malloc( MFT_RECORD_LENGTH );
+	if(u64bytesAbsoluteMFT > 0) {
+		/* Move file pointer to the absolute MFT location */
+		if((blk_offset = lseek(fileDescriptor, u64bytesAbsoluteMFT, SEEK_SET)) == -1) {
+			int errsv = errno;
+			printf("Failed to position file pointer to NTFS boot sector with error: %s.\n", strerror(errsv));
+			return EXIT_FAILURE;
+		}
+		firstMFTHeader = malloc(sizeof(NTFS_MFT_FILE_ENTRY_HEADER));
+		/* Read the first MFT entry */
+		if((readStatus = read( fileDescriptor, mftBuffer, MFT_RECORD_LENGTH)) == -1){
+			int errsv = errno;
+			printf("Failed to read MFT at offset: %" PRIu64 ", with error %s.\n", u64bytesAbsoluteMFT, strerror(errsv));
+			return EXIT_FAILURE;
+		} else {
+			printf("\nRead first MFT record into buffer.\n");
+			memcpy(firstMFTHeader, mftBuffer, sizeof(NTFS_MFT_FILE_ENTRY_HEADER)); /* Copy header from record*/
+		}
+	}
+
+	/*---------------------- Follow attribute offset position ---------------------*/
+	NTFS_ATTRIBUTE *mftRecAttrib = malloc( sizeof(NTFS_ATTRIBUTE) );
+	uint16_t attribOffset = firstMFTHeader->wAttribOffset;
+	printf("Attribute offset into the MFT header: %u\n", attribOffset);
+	memcpy(mftRecAttrib, mftBuffer+attribOffset, sizeof(NTFS_ATTRIBUTE));
+	getMFTAttribMembers(buff, mftRecAttrib);
+	printf("%s\n", buff);
+	if(mftRecAttrib->uchNonResFlag == FALSE) {
+		/*Data is resident to the attribute */
+		uint32_t dataLength = (mftRecAttrib->Attr).Resident.dwLength;
+		uint16_t dataOffset = (mftRecAttrib->Attr).Resident.wAttrOffset;
+		char* data = malloc( dataLength );
+		memcpy(data, mftBuffer+attribOffset+dataOffset, dataLength);
+		printf("Data: %s\n", data);
+		free(data);
+	} else if(mftRecAttrib->uchNonResFlag == TRUE) {
+		/*Data is non-resident to the attribute */
+
+	}
 
 
 	/*---------------------------------- Tidy up ----------------------------------*/
@@ -190,8 +270,11 @@ int main(int argc, char* argv[]) {
 		free(nTFSParts[i]); /*Free the memory allocated for NTFS partition structs */
 	} free(nTFSParts);
 
-	//free(nTFS_Boot);	/*Free Boot sector memory */
-	free(buff); /*Used for buffering various texts */
+	free(nTFS_Boot);		/*Free Boot sector memory */
+	free(firstMFTHeader);	/*48b First MFT entry header*/
+	free(buff); 			/*Used for buffering various texts */
+	free(mftBuffer);		/*Used for buffering one MFT record, 1kb*/
+	free(mftRecAttrib);
 
 	if((close(fileDescriptor)) == -1) { /*close block device and check if failed */
 		int errsv = errno;

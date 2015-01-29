@@ -44,4 +44,62 @@ typedef unsigned char BYTE; /*Define byte symbolic abbreviation */
 		char		chBootStrapCode[426];
 		uint16_t	wSecMark;				/*Always 0x55AA, marks end of boot sector */
 	} NTFS_BOOT_SECTOR, *P_NTFS_BOOT_SECTOR;
+
+	/*http://www.cse.scu.edu/~tschwarz/coen252_07Fall/Lectures/NTFS.html */
+	typedef struct _NTFS_MFT_FILE_ENTRY_HEADER {
+		char		fileSignature[4];		/*Magic Number: "FILE" */
+		uint16_t	wFixupOffset;			/*Offset to the update sequence. */
+		uint16_t	wFixupSize;				/*Number of entries in fixup array */
+		int64_t		n64LogSeqNumber;		/*$LogFile Sequence Number (LSN) */
+		uint16_t	wSequence;				/*Sequence number */
+		uint16_t	wHardLinks;				/*Hard link count (number of directory entries that reference this record.) */
+		uint16_t	wAttribOffset;			/*Offset to first attribute */
+		uint16_t	wFlags;					/*Flags: 0x01: record in use, 0x02 directory. */
+		uint32_t	dwRecLength;			/*Used size of MFT entry */
+		uint32_t	dwAllLength;			/*Allocated size of MFT entry. */
+		int64_t		n64BaseMftRec;			/*File reference to the base FILE record */
+		uint16_t	wNextAttrID;			/*Next attribute ID */
+		uint16_t	wFixUpPattern;			/*Align to 4B boundary */
+		uint32_t	dwMFTRecNumber;			/*Number of this MFT record */
+		//BYTE		uchMFTData[976];		/*Remainder of MFT record */
+	} NTFS_MFT_FILE_ENTRY_HEADER, *P_NTFS_MFT_FILE_ENTRY_HEADER;
+
+	/*
+	 * The attribute header is there to help find the relevant data for an attribute,
+	 * not to be the relevant data header itself.
+	 */
+	typedef struct	_NTFS_ATTRIBUTE {
+		uint32_t	dwType;			/*Attribute Type Identifier */
+		uint32_t	dwFullLength;	/*Length of Attribute (includes header) */
+		BYTE		uchNonResFlag;	/*Non-Resident Flag */
+		BYTE		uchNameLength;	/*Length of Name (only for ADS) */
+		uint16_t	wNameOffset;	/*Offset to Name (only for ADS) */
+		uint16_t	wFlags;			/*Flags(Compressed, Encrypted, Sparse) */
+		uint16_t	wID;			/*Attribute Identifier */
+
+		union ATTR	{
+			/*MFT records contain various attributes preceded by an attribute header */
+			struct RESIDENT	{
+				uint32_t	dwLength;		/*Length of Attribute Content */
+				uint16_t 	wAttrOffset;	/*Offset to Attribute Content */
+				BYTE 		uchIndexedTag;	/*Indexed */
+				BYTE 		uchPadding;		/*Padding */
+			} Resident;
+			/*
+			 * non-resident attributes need to describe an arbitrary number of cluster runs,
+			 * consecutive clusters that they occupy.
+			 */
+			struct NONRESIDENT {
+				int64_t		n64StartVCN;		/*Start cluster number */
+				int64_t		n64EndVCN;			/*End cluster number */
+				uint16_t	wDatarunOffset;
+				uint16_t	wCompressionSize;	/*Compression unit size */
+				BYTE		uchPadding[4];
+				int64_t		n64AllocSize;
+				int64_t		n64RealSize;		/*Actual size of the file, probably have to confine this  */
+				int64_t		n64StreamSize;
+			} NonResident;
+		} Attr;
+
+	} NTFS_ATTRIBUTE, *P_NTFS_ATTRIBUTE;
 #pragma pack(pop)
