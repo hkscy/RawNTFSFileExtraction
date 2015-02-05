@@ -17,17 +17,20 @@
 #include <errno.h>     /*For errno */
 #include <stdint.h>    /*unitN_t */
 #include <string.h>
-#include <inttypes.h> /*for (u)int64_t format specifiers PRId64 and PRIu64 */
+#include <inttypes.h>  /*for (u)int64_t format specifiers PRId64 and PRIu64 */
+#include <wchar.h>	   /*for formatted output of wide characters. */
 #include "NTFSStruct.h"
+#include "NTFSAttributes.h"
 
 #define FALSE 0
 #define TRUE 1
-#define BUFFSIZE 512
+#define BUFFSIZE 1024
 #define P_PARTITIONS 4
 #define SECTOR_SIZE 512
 #define P_OFFEST 0x1BE	/*Partition information begins at offest 0x1BE */
 #define NTFS_TYPE 0x07	/*NTFS partitions are represented by 0x07 in the partition table */
 #define MFT_RECORD_LENGTH 1024 /*MFT entries are 1024 bytes long */
+#define MFT_META_HEADERS 6 /*The first 16 MFT entries are reserved for metadata files */
 
 static const char BLOCK_DEVICE[] = "/dev/mechastriessand/windows7";
 
@@ -75,11 +78,12 @@ int getBootSectInfo(char* buff, NTFS_BOOT_SECTOR *bootSec) {
 				  "Bytes per logical sector: %u\n"
 				  "Logical sectors per cluster: %u\n"
 				  "Reserved logical sectors: %u\n"
-				  "Media descriptor: %d\n"
+				  "Media descriptor: %s\n"
 				  "Physical sectors per track: %u\n"
 				  "Number of heads: %u\n"
 				  "Hidden sectors: %d\n"
 				  "Sectors in volume: %" PRId64 "\n"
+				  "Size of volume sectors: %0.2f mb\n"
 				  "\n*Cluster number for MFT: %" PRId64 "\n"
 				  "Mirror of cluster number for MFT: %" PRId64 "\n"
 				  "MFT record size: %d\n"
@@ -92,11 +96,12 @@ int getBootSectInfo(char* buff, NTFS_BOOT_SECTOR *bootSec) {
 				  (bootSec->bpb).wBytesPerSec,
 				  (bootSec->bpb).uchSecPerClust,
 				  (bootSec->bpb).wReservedSec,
-				  (bootSec->bpb).uchMediaDescriptor,
+				  (bootSec->bpb).uchMediaDescriptor == 0xF8?"Hard Disk":"Other",
 				  (bootSec->bpb).wSecPerTrack,
 				  (bootSec->bpb).wNumberOfHeads,
 				  (bootSec->bpb).dwHiddenSec,
 				  (bootSec->bpb).n64TotalSec,
+				  (bootSec->bpb).wBytesPerSec*(bootSec->bpb).n64TotalSec/(1024.0*1024.0),
 				  (bootSec->bpb).n64MFTLogicalClustNum,	/*Cluster number for MFT! */
 				  (bootSec->bpb).n64MFTMirrLoficalClustNum,
 				  (bootSec->bpb).nClustPerMFTRecord,
@@ -104,6 +109,38 @@ int getBootSectInfo(char* buff, NTFS_BOOT_SECTOR *bootSec) {
 				  (bootSec->bpb).n64VolumeSerialNum,
 				  (bootSec->bpb).dwCheckSum,
 				  bootSec->wSecMark );
+	return 0;
+}
+
+int getNTFSAttrib(char* buff, NTFS_MFT_FILE_ENTRY_HEADER *mftFileEntry) {
+	sprintf(buff, "File signature: %s\n"
+				  "Offset to the update sequence: %u\n"
+				  "Number of entries in fixup array: %u\n" /*Number times entry written */
+				  "$LogFile Sequence Number (LSN): %" PRId64 "\n"
+				  "Sequence number %u\n"
+				  "Hard link count: %u\n"
+				  "Offset to first attribute: %u\n"
+				  "Flags: %u\n"
+				  "Used size of MFT entry: %d\n"
+				  "Allocated size of MFT entry: %d\n"
+				  "File reference to the base FILE record: %" PRId64 "\n" /*Non zero if attributes not contained in MFT record */
+				  "Next attribute ID: %u\n"
+				  "wFixUpPattern: %u\n" /*Recognise partially written clusters */
+				  "Number of this MFT record: %d\n",
+				  mftFileEntry->fileSignature,
+				  mftFileEntry->wFixupOffset,
+				  mftFileEntry->wFixupSize,
+				  mftFileEntry->n64LogSeqNumber,
+				  mftFileEntry->wSequence,
+				  mftFileEntry->wHardLinks,
+				  mftFileEntry->wAttribOffset,
+				  mftFileEntry->wFlags,
+				  mftFileEntry->dwRecLength,
+				  mftFileEntry->dwAllLength,
+				  mftFileEntry->n64BaseMftRec,
+				  mftFileEntry->wNextAttrID,
+				  mftFileEntry->wFixUpPattern,
+				  mftFileEntry->dwMFTRecNumber);
 	return 0;
 }
 
@@ -220,47 +257,139 @@ int main(int argc, char* argv[]) {
 		printf("Absolute MFT location in bytes: %" PRIu64 "\n", u64bytesAbsoluteMFT);
 	}
 
-	/* Find the root directory metafile entry in the MFT, and extract its index allocation attributes */
-	NTFS_MFT_FILE_ENTRY_HEADER *firstMFTHeader;// = malloc( MFT_RECORD_LENGTH );
+	/*Find the root directory metafile entry in the MFT, and extract its index allocation attributes */
+	/*Find and extract the first 16 MFT entries which are reserved for metadata */
+	NTFS_MFT_FILE_ENTRY_HEADER **mftMetaHeaders;
+	mftMetaHeaders = malloc(MFT_META_HEADERS*sizeof(NTFS_MFT_FILE_ENTRY_HEADER));
+	/*Move file pointer to the absolute MFT location */
 	if(u64bytesAbsoluteMFT > 0) {
-		/* Move file pointer to the absolute MFT location */
 		if((blk_offset = lseek(fileDescriptor, u64bytesAbsoluteMFT, SEEK_SET)) == -1) {
 			int errsv = errno;
-			printf("Failed to position file pointer to NTFS boot sector with error: %s.\n", strerror(errsv));
+			printf("Failed to position file pointer to NTFS MFT with error: %s.\n", strerror(errsv));
 			return EXIT_FAILURE;
 		}
-		firstMFTHeader = malloc(sizeof(NTFS_MFT_FILE_ENTRY_HEADER));
-		/* Read the first MFT entry */
-		if((readStatus = read( fileDescriptor, mftBuffer, MFT_RECORD_LENGTH)) == -1){
+	}
+	for(i = 0; i < MFT_META_HEADERS; i++) { /*For each of the 16 headers */
+		mftMetaHeaders[i] = malloc(sizeof(NTFS_MFT_FILE_ENTRY_HEADER)); /*Allocate for the file header */
+		/* Read the MFT entry */
+		if((readStatus = read( fileDescriptor, mftBuffer, MFT_RECORD_LENGTH)) == -1) { /*Read the next record */
 			int errsv = errno;
 			printf("Failed to read MFT at offset: %" PRIu64 ", with error %s.\n", u64bytesAbsoluteMFT, strerror(errsv));
 			return EXIT_FAILURE;
 		} else {
-			printf("\nRead first MFT record into buffer.\n");
-			memcpy(firstMFTHeader, mftBuffer, sizeof(NTFS_MFT_FILE_ENTRY_HEADER)); /* Copy header from record*/
+			memcpy(mftMetaHeaders[i], mftBuffer, sizeof(NTFS_MFT_FILE_ENTRY_HEADER)); /* Copy header from record*/
+			printf("\nRead MFT record %d into buffer.\n", i);
+			/*--------------------- Get MFT Record file entry headers ---------------------*/
+			getNTFSAttrib(buff, mftMetaHeaders[i]);
+			printf("%s\n", buff);
+
+			NTFS_ATTRIBUTE *mftRecAttrib, *mftRecAttribTemp = malloc( sizeof(NTFS_ATTRIBUTE) );
+			uint16_t attribOffset = mftMetaHeaders[i]->wAttribOffset; /*Offset of the first attribute */
+			/*---------------------- Follow attribute(s) offset position(s) ---------------------*/
+			do {
+				memcpy(mftRecAttribTemp, mftBuffer+attribOffset, sizeof(NTFS_ATTRIBUTE));
+				/*Determine actual attribute length and use to copy full attribute */
+				mftRecAttrib = malloc(mftRecAttribTemp->dwFullLength);
+				memcpy(mftRecAttrib, mftBuffer+attribOffset, mftRecAttribTemp->dwFullLength);
+				//getMFTAttribMembers(buff, mftRecAttrib);
+				//printf("%s\n", buff);
+
+				if(mftRecAttrib->dwType == STANDARD_INFORMATION) { /*if is STANDATRD_INFORMATION attribute */
+					printf("STANDARD_INFORMATION attribute\n");
+				}
+				else if(mftRecAttrib->dwType == ATTRIBUTE_LIST) {
+					printf("ATTRIBUTE_LIST attribute\n");
+				}
+				else if(mftRecAttrib->dwType == FILE_NAME) { /*If is FILE_NAME attribute */
+					printf("FILE_NAME attribute:\n");
+					FILE_NAME_ATTR *fileNameAttr = malloc( mftRecAttrib->Attr.Resident.dwLength + 1 );
+					memcpy(fileNameAttr, mftBuffer+attribOffset+(mftRecAttrib->Attr).Resident.wAttrOffset,
+										 	 	 	 	 	 	(mftRecAttrib->Attr).Resident.dwLength);
+					printf("\tFile name length: %u\n", fileNameAttr->bFileNameLength);
+					uint16_t* fileName = fileNameAttr->arrUnicodeFileName;
+					//fileName[fileNameAttr->bFileNameLength] = 0;
+					printf("\tFilename Namespace: %u\n", fileNameAttr->bFilenameNamespace);
+					printf("\tFile name: ");
+					int  k = 0;
+					for(; k<fileNameAttr->bFileNameLength; k++) {
+						printf("%c", fileName[k]&0xFF);
+					}
+					//printf(fileNameAttr->arrUnicodeFileName);
+					printf("\n");
+					free(fileNameAttr);
+				} else if(mftRecAttrib->dwType == OBJECT_ID ) {
+					printf("OBJECT_ID attribute\n");
+				} else if(mftRecAttrib->dwType == SECURITY_DESCRIPTOR) {
+					printf("SECURITY_DESCRIPTOR attribute\n");
+				} else if(mftRecAttrib->dwType == VOLUME_NAME) {
+					/*This attribute simply contains the name of the volume. (In UNICODE!) */
+					printf("VOLUME_NAME attribute\n");
+					VOLUME_NAME_ATTR *vNameAttr = malloc( mftRecAttrib->Attr.Resident.dwLength + 1);
+					memcpy(vNameAttr, mftBuffer+attribOffset+(mftRecAttrib->Attr).Resident.wAttrOffset,
+															 (mftRecAttrib->Attr).Resident.dwLength);
+					printf("\tVolume Name: %s\n", vNameAttr->arrUnicodeVolumeName);
+					free(vNameAttr);
+				} else if(mftRecAttrib->dwType == VOLUME_INFORMATION) {
+					printf("VOLUME_INFORMATION attribute\n");
+				} else if(mftRecAttrib->dwType == DATA) {
+					printf("DATA attribute\n");
+				} else if(mftRecAttrib->dwType == INDEX_ROOT) {
+					/*This is the root node of the B+ tree that implements an index (e.g. a directory).
+					  This file attribute is always resident. */
+					printf("INDEX_ROOT attribute\n");
+				} else if(mftRecAttrib->dwType == INDEX_ALLOCATION) {
+					printf("INDEX_ALLOCATION attribute\n");
+				} else if(mftRecAttrib->dwType == BITMAP) {
+					/*This file attribute is a sequence of bits, each of which represents the status of an entity. */
+					printf("BITMAP attribute\n");
+				} else if(mftRecAttrib->dwType == REPARSE_POINT) {
+					printf("REPARSE_POINT attribute\n");
+				} else if(mftRecAttrib->dwType == EA_INFORMATION) {
+					printf("EA_INFORMATION attribute\n");
+				} else if(mftRecAttrib->dwType == EA) {
+					printf("EA attribute\n");
+				} else if(mftRecAttrib->dwType == LOGGED_UTILITY_STREAM) {
+					printf("LOGGED_UTILITY_STREAM attribute\n");
+				} else {
+					printf("Unknown attribute of type: %d.\n", mftRecAttrib->dwType);
+				}
+				printf("\t%s\n", mftRecAttrib->uchNonResFlag==TRUE?"Non-Resident.":"Resident.");
+				/*--- If the attribute data is non-resident then... */
+				if(mftRecAttrib->uchNonResFlag==TRUE) {
+					uint64_t realSize = (mftRecAttrib->Attr).NonResident.n64RealSize;
+					printf("\tReal size: %" PRId64 " bytes.\n", realSize);
+
+					uint16_t dataRunOffset = (mftRecAttrib->Attr).NonResident.wDatarunOffset; /*Starting cluster for data */
+					BYTE lenOffsetSize = 0xFF&dataRunOffset; /*First byte from read position, */
+					/*Top four bits represent a length, and the last four bits represent an offset. */
+					printf("\tdataRunOffset: %u, lenOffsetSize = %u\n", dataRunOffset, lenOffsetSize);
+					LEN_OFFS_BITFIELD *len_offset_bitField = malloc( sizeof(LEN_OFFS_BITFIELD) );
+					memcpy(len_offset_bitField, &lenOffsetSize, sizeof(LEN_OFFS_BITFIELD) );
+					dataRunOffset++; /*Next read position */
+					/*The four bit length field in our bit field union contains
+					the length in bytes from which to copy the full length of the data run.
+					This length will never exceed eight bytes in length, but can often be
+					much shorter */
+					printf("\tlength: %u ", len_offset_bitField->bitfield.length);
+					printf("offset: %u\n", len_offset_bitField->bitfield.offset);
+					uint64_t *dataRunLength = malloc( sizeof(uint64_t) );
+					memcpy(dataRunLength, mftBuffer+attribOffset+dataRunOffset, len_offset_bitField->bitfield.length);
+					/*To continue, create an eight byte value which will hold a copied record
+					length for our first data run.
+					Copy in the data from the current record position at the
+					specific length, and advance the current read position by that same length to
+					move to the next read offset.*/
+					printf("\t%" PRIu64 "\n", *dataRunLength);
+
+					free(len_offset_bitField);
+					free(dataRunLength);
+				}
+				attribOffset += mftRecAttrib->dwFullLength; /*Increment the offset by the length of this attribute */
+			} while(attribOffset+8 < mftMetaHeaders[i]->dwRecLength); /*While there are attributes left to inspect */
+			free(mftRecAttrib);
+			free(mftRecAttribTemp);
 		}
 	}
-
-	/*---------------------- Follow attribute offset position ---------------------*/
-	NTFS_ATTRIBUTE *mftRecAttrib = malloc( sizeof(NTFS_ATTRIBUTE) );
-	uint16_t attribOffset = firstMFTHeader->wAttribOffset;
-	printf("Attribute offset into the MFT header: %u\n", attribOffset);
-	memcpy(mftRecAttrib, mftBuffer+attribOffset, sizeof(NTFS_ATTRIBUTE));
-	getMFTAttribMembers(buff, mftRecAttrib);
-	printf("%s\n", buff);
-	if(mftRecAttrib->uchNonResFlag == FALSE) {
-		/*Data is resident to the attribute */
-		uint32_t dataLength = (mftRecAttrib->Attr).Resident.dwLength;
-		uint16_t dataOffset = (mftRecAttrib->Attr).Resident.wAttrOffset;
-		char* data = malloc( dataLength );
-		memcpy(data, mftBuffer+attribOffset+dataOffset, dataLength);
-		printf("Data: %s\n", data);
-		free(data);
-	} else if(mftRecAttrib->uchNonResFlag == TRUE) {
-		/*Data is non-resident to the attribute */
-
-	}
-
 
 	/*---------------------------------- Tidy up ----------------------------------*/
 	for(i = 0; i<P_PARTITIONS; i++) {
@@ -269,12 +398,14 @@ int main(int argc, char* argv[]) {
 	for(i=0; i<nNTFS; i++) {
 		free(nTFSParts[i]); /*Free the memory allocated for NTFS partition structs */
 	} free(nTFSParts);
+	for(i = 0; i<MFT_META_HEADERS; i++) {
+		free(mftMetaHeaders[i]);
+	}free(mftMetaHeaders);	/*Free the memory allocated for the NTFS metadata files*/
 
 	free(nTFS_Boot);		/*Free Boot sector memory */
-	free(firstMFTHeader);	/*48b First MFT entry header*/
+	//free(firstMFTHeader);	/*48b First MFT entry header*/
 	free(buff); 			/*Used for buffering various texts */
 	free(mftBuffer);		/*Used for buffering one MFT record, 1kb*/
-	free(mftRecAttrib);
 
 	if((close(fileDescriptor)) == -1) { /*close block device and check if failed */
 		int errsv = errno;

@@ -84,6 +84,7 @@ typedef unsigned char BYTE; /*Define byte symbolic abbreviation */
 				uint16_t 	wAttrOffset;	/*Offset to Attribute Content */
 				BYTE 		uchIndexedTag;	/*Indexed */
 				BYTE 		uchPadding;		/*Padding */
+				/*Attribute itself is read from this point onwards */
 			} Resident;
 			/*
 			 * non-resident attributes need to describe an arbitrary number of cluster runs,
@@ -102,4 +103,14 @@ typedef unsigned char BYTE; /*Define byte symbolic abbreviation */
 		} Attr;
 
 	} NTFS_ATTRIBUTE, *P_NTFS_ATTRIBUTE;
+
+	typedef struct _LEN_OFFS_BITFIELD {
+		union {
+			BYTE val;
+			struct {
+				unsigned char offset: 4;
+				unsigned char length:  4;
+			} bitfield;
+		};
+	} LEN_OFFS_BITFIELD, *P_LEN_OFFS_BITFIELD;
 #pragma pack(pop)
