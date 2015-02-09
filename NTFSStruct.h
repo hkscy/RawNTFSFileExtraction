@@ -113,4 +113,52 @@ typedef unsigned char BYTE; /*Define byte symbolic abbreviation */
 			} bitfield;
 		};
 	} LEN_OFFS_BITFIELD, *P_LEN_OFFS_BITFIELD;
+
+	/*Found at the beginning of each 4096 INDX record. */
+	typedef struct _NTATTR_STANDARD_INDX_HEADER {
+		char magicNumber[4]; /*Contains the string literal 'INDX' */
+
+		unsigned short updateSeqOffs;
+		unsigned short sizeOfUpdateSequenceNumberInWords;
+
+		uint64_t logFileSeqNum;
+		uint64_t vcnOfINDX;
+
+		uint32_t indexEntryOffs;
+		uint32_t sizeOfEntries;	/*Use for loop condition. read offset<sizeOfEntries */
+		uint32_t sizeOfEntryAlloc;
+
+		uint16_t flags;
+		uint16_t padding[3];
+
+		unsigned short updateSeq;
+
+	} NTATTR_STANDARD_INDX_HEADER;
+
+	/*Actual index record structure */
+	typedef struct _NTATTR_INDEX_RECORD_ENTRY {
+		/*Multiply by MFT_RECORD_SIZE (1024 bytes) and use as offset from
+		  start of the MFT to find the record */
+		uint64_t mftReference;
+		/*Next INDX record can be located by adding sizeofIndexEntry to the
+		 *current offset */
+		unsigned short sizeofIndexEntry;
+		unsigned short filenameOffset;
+
+		unsigned short flags;
+		char padding[2];
+
+		uint64_t mftFileReferenceOfParent;
+		uint64_t creationTime;
+		uint64_t lastModified;
+		uint64_t lastModifiedFilerecord;
+		uint64_t lastAccessTime;
+		uint64_t allocatedSizeOfFile;
+		uint64_t realFileSize;
+		uint64_t fileFlags;
+
+		uint16_t fileNameLength;
+		uint16_t fileNameNamespace;
+	} NTATTR_INDEX_RECORD_ENTRY;
+	/*Unicode file name string is found directly after the end of the index record entry structure */
 #pragma pack(pop)
