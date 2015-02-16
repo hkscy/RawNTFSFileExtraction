@@ -94,25 +94,25 @@ typedef unsigned char BYTE; /*Define byte symbolic abbreviation */
 				int64_t		n64StartVCN;		/*Start cluster number */
 				int64_t		n64EndVCN;			/*End cluster number */
 				uint16_t	wDatarunOffset;
-				uint16_t	wCompressionSize;	/*Compression unit size */
+				uint16_t	wCompressionSize;	/*Compression unit size, 0: Uncompressed */
 				BYTE		uchPadding[4];
-				int64_t		n64AllocSize;
+				int64_t		n64AllocSize;		/*Attr size rounded up to cluster size */
 				int64_t		n64RealSize;		/*Actual size of the file, probably have to confine this  */
-				int64_t		n64StreamSize;
+				int64_t		n64StreamSize; 		/*Always equal to allocated size? */
 			} NonResident;
 		} Attr;
 
 	} NTFS_ATTRIBUTE, *P_NTFS_ATTRIBUTE;
 
-	typedef struct _LEN_OFFS_BITFIELD {
+	typedef struct _OFFS_LEN_BITFIELD {
 		union {
 			BYTE val;
 			struct {
-				unsigned char offset: 4;
-				unsigned char length:  4;
+				unsigned char lengthSize:  4;	/*Nibble contains the size of the length field */
+				unsigned char offsetSize: 4;	/*Nibble contains the size of the offset field */
 			} bitfield;
 		};
-	} LEN_OFFS_BITFIELD, *P_LEN_OFFS_BITFIELD;
+	} OFFS_LEN_BITFIELD, *P_OFFS_LEN_BITFIELD;
 
 	/*Found at the beginning of each 4096 INDX record. */
 	typedef struct _NTATTR_STANDARD_INDX_HEADER {

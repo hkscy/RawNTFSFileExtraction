@@ -179,6 +179,8 @@ int getMFTAttribMembers(char * buff, NTFS_ATTRIBUTE* attrib) {
 	return 0;
 }
 
+uint32_t dwBytesPerCluster = -1; /*Bytes per cluster on the disk */
+
 int main(int argc, char* argv[]) {
 	int fileDescriptor = 0;
 	off_t blk_offset = 0;
@@ -244,8 +246,8 @@ int main(int argc, char* argv[]) {
 		getBootSectInfo(buff, nTFS_Boot);
 		printf("\nNTFS boot sector data\n%s\n", buff);
 		/*Calculate the number of bytes per sector = sectors per cluster * bytes per sector */
-		uint32_t dwBytesPerCluster = (nTFS_Boot->bpb.uchSecPerClust) * (nTFS_Boot->bpb.wBytesPerSec);
-		printf("Filesystem Bytes Per Sector: %d\n", dwBytesPerCluster);
+		dwBytesPerCluster = (nTFS_Boot->bpb.uchSecPerClust) * (nTFS_Boot->bpb.wBytesPerSec);
+		printf("Filesystem Bytes Per Cluster: %d\n", dwBytesPerCluster);
 		/*Calculate the number of bytes by which the boot sector is offset on disk */
 		uint64_t u64bytesAbsoluteSector = (nTFS_Boot->bpb.wBytesPerSec) * (nTFSParts[bsFound]->dwRelativeSector);
 		printf("Bootsector offset in bytes: %" PRIu64 "\n", u64bytesAbsoluteSector );
@@ -269,7 +271,7 @@ int main(int argc, char* argv[]) {
 			return EXIT_FAILURE;
 		}
 	}
-	for(i = 0; i < MFT_META_HEADERS; i++) { /*For each of the 16 headers */
+	for(i = 0; i < MFT_META_HEADERS; i++) { /*For each of the MFT entries */
 		mftMetaHeaders[i] = malloc(sizeof(NTFS_MFT_FILE_ENTRY_HEADER)); /*Allocate for the file header */
 		/* Read the MFT entry */
 		if((readStatus = read( fileDescriptor, mftBuffer, MFT_RECORD_LENGTH)) == -1) { /*Read the next record */
@@ -305,17 +307,17 @@ int main(int argc, char* argv[]) {
 					FILE_NAME_ATTR *fileNameAttr = malloc( mftRecAttrib->Attr.Resident.dwLength + 1 );
 					memcpy(fileNameAttr, mftBuffer+attribOffset+(mftRecAttrib->Attr).Resident.wAttrOffset,
 										 	 	 	 	 	 	(mftRecAttrib->Attr).Resident.dwLength);
-					printf("\tFile name length: %u\n", fileNameAttr->bFileNameLength);
+					printf("\tFile name length: %u\t", fileNameAttr->bFileNameLength);
 					uint16_t* fileName = fileNameAttr->arrUnicodeFileName;
-					//fileName[fileNameAttr->bFileNameLength] = 0;
-					printf("\tFilename Namespace: %u\n", fileNameAttr->bFilenameNamespace);
+					printf("\tNamespace: %u\t", fileNameAttr->bFilenameNamespace);
+					/* Print out the file name of the record*/
 					printf("\tFile name: ");
 					int  k = 0;
 					for(; k<fileNameAttr->bFileNameLength; k++) {
-						printf("%c", fileName[k]&0xFF);
+						printf("%c", fileName[k]&0xFF); /*Mask just the final 8 bits */
 					}
-					//printf(fileNameAttr->arrUnicodeFileName);
 					printf("\n");
+
 					free(fileNameAttr);
 				} else if(mftRecAttrib->dwType == OBJECT_ID ) {
 					printf("OBJECT_ID attribute\n");
@@ -353,36 +355,70 @@ int main(int argc, char* argv[]) {
 				} else {
 					printf("Unknown attribute of type: %d.\n", mftRecAttrib->dwType);
 				}
-				printf("\t%s\n", mftRecAttrib->uchNonResFlag==TRUE?"Non-Resident.":"Resident.");
-				/*--- If the attribute data is non-resident then... */
-				if(mftRecAttrib->uchNonResFlag==TRUE) {
+				printf("\t%s ", mftRecAttrib->uchNonResFlag==TRUE?"Non-Resident.":"Resident.");
+
+				if(mftRecAttrib->uchNonResFlag==FALSE) {
+					uint32_t attribDataSize = (mftRecAttrib->Attr.Resident).dwLength;
+					printf("\tData size: %d Bytes.\n", attribDataSize);
+					//size_t attribDataOffset = (mftRecAttrib->Attr.Resident).wAttrOffset;
+					//uint16_t * residentData = malloc( attribDataSize );
+					/* Dump raw resident-attribute data for debugging purposes. */
+					//memcpy(residentData, mftBuffer+attribOffset+attribDataOffset, attribDataSize);
+					//int  k = 0;
+					//printf("\tSize of data: %lu Raw attribute data: ", attribDataSize/sizeof(uint16_t));
+					//for(; k<attribDataSize/sizeof(uint16_t); k++) {
+					//	printf("%04x: ", residentData[k]);
+					//	printf("%c ", residentData[k]&0xFF);
+					//}
+					//printf("\n");
+					//free(residentData);
+				}
+				/*--------- If the attribute data is non-resident then... ---------*/
+				else if(mftRecAttrib->uchNonResFlag==TRUE) {
+					uint8_t countRuns = 0;
+					OFFS_LEN_BITFIELD *offs_len_bitField = malloc( sizeof(OFFS_LEN_BITFIELD) );
+					uint64_t *length = malloc( sizeof(uint64_t) ); /*The length and offset data run fields are always 8 or less bytes */
+					int64_t *offset = malloc( sizeof(int64_t) ); /* Offset is signed */
 					uint64_t realSize = (mftRecAttrib->Attr).NonResident.n64RealSize;
-					printf("\tReal size: %" PRId64 " bytes.\n", realSize);
+					/*Must check this is within the capabilities of the program */
+					printf("\tReal file size: %" PRId64 " bytes.\n", realSize);
+					/*Offset to data runs */
+					uint16_t dataRunOffset = (mftRecAttrib->Attr).NonResident.wDatarunOffset;
+					printf("\tData run offset in attribute header: %u out of %u\n", dataRunOffset, mftRecAttrib->dwFullLength);
+					printf("\tProcessing runlist...\n");
+					do {
+						/*Follow offset to data runs, read first data run. */
+						/*First read it's offset and length nibbles using the bitfield */
+						/*Top four bits represent a length, and the last four bits represent an offset. */
+						if(countRuns == 0) {
+							memcpy(offs_len_bitField, mftBuffer+attribOffset+dataRunOffset, sizeof(OFFS_LEN_BITFIELD));
+						}
+						printf("\tlength of length field of datarun: %u ", offs_len_bitField->bitfield.lengthSize);
+						printf("\tlength of offset field of datarun:: %u\n", offs_len_bitField->bitfield.offsetSize);
 
-					uint16_t dataRunOffset = (mftRecAttrib->Attr).NonResident.wDatarunOffset; /*Starting cluster for data */
-					BYTE lenOffsetSize = 0xFF&dataRunOffset; /*First byte from read position, */
-					/*Top four bits represent a length, and the last four bits represent an offset. */
-					printf("\tdataRunOffset: %u, lenOffsetSize = %u\n", dataRunOffset, lenOffsetSize);
-					LEN_OFFS_BITFIELD *len_offset_bitField = malloc( sizeof(LEN_OFFS_BITFIELD) );
-					memcpy(len_offset_bitField, &lenOffsetSize, sizeof(LEN_OFFS_BITFIELD) );
-					dataRunOffset++; /*Next read position */
-					/*The four bit length field in our bit field union contains
-					the length in bytes from which to copy the full length of the data run.
-					This length will never exceed eight bytes in length, but can often be
-					much shorter */
-					printf("\tlength: %u ", len_offset_bitField->bitfield.length);
-					printf("offset: %u\n", len_offset_bitField->bitfield.offset);
-					uint64_t *dataRunLength = malloc( sizeof(uint64_t) );
-					memcpy(dataRunLength, mftBuffer+attribOffset+dataRunOffset, len_offset_bitField->bitfield.length);
-					/*To continue, create an eight byte value which will hold a copied record
-					length for our first data run.
-					Copy in the data from the current record position at the
-					specific length, and advance the current read position by that same length to
-					move to the next read offset.*/
-					printf("\t%" PRIu64 "\n", *dataRunLength);
+						*length = 0; /*Initialise to zero since values may be less than 8 bytes long */
+						*offset = 0;
+						dataRunOffset++; /*Move offset past offset_length_union */
 
-					free(len_offset_bitField);
-					free(dataRunLength);
+						/*Copy length field from run list */
+						memcpy(length, mftBuffer+attribOffset+dataRunOffset, offs_len_bitField->bitfield.lengthSize);
+						dataRunOffset+=offs_len_bitField->bitfield.lengthSize; /*Move offset past length field */
+
+						/*Copy offset field from run list */
+						memcpy(offset, mftBuffer+attribOffset+dataRunOffset, offs_len_bitField->bitfield.offsetSize);
+						dataRunOffset+=offs_len_bitField->bitfield.offsetSize; /*Move offset past offset field */
+
+						printf("\tLength of datarun: %" PRIu64 " clusters\t", *length);
+						printf("\tVCN offset to datarun: %" PRId64 " clusters\n", *offset);
+						countRuns++;
+						/*Copy next bitfield header, check if == 0 for loop termination */
+						memcpy(offs_len_bitField, mftBuffer+attribOffset+dataRunOffset, sizeof(OFFS_LEN_BITFIELD));
+
+					} while(offs_len_bitField->val != 0);
+					printf("\tFinished processing %u data runs from runlist\n", countRuns);
+					free(length);
+					free(offset);
+					free(offs_len_bitField);
 				}
 				attribOffset += mftRecAttrib->dwFullLength; /*Increment the offset by the length of this attribute */
 			} while(attribOffset+8 < mftMetaHeaders[i]->dwRecLength); /*While there are attributes left to inspect */
