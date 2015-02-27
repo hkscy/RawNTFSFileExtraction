@@ -19,8 +19,10 @@
 #include <string.h>
 #include <inttypes.h>  /*for (u)int64_t format specifiers PRId64 and PRIu64 */
 #include <wchar.h>	   /*for formatted output of wide characters. */
+
 #include "NTFSStruct.h"
 #include "NTFSAttributes.h"
+#include "RunList.h"
 
 #define FALSE 0
 #define TRUE 1
@@ -34,150 +36,10 @@
 
 static const char BLOCK_DEVICE[] = "/dev/mechastriessand/windows7";
 
-/**
- * Prints the members of *part into *buff, plus some extra derived info.
- * Returns the relative sector offest for the partition if it is NTFS,
- * otherwise returns -1.
- */
-int getPartitionInfo(char *buff, PARTITION *part) {
-	if(part->dwNumberSector == 0) { /*Primary partition entry is empty */
-		sprintf(buff, "Primary partition table entry empty.");
-		return -1;
-	}
-	sprintf(buff, "Is bootable: %s\n"
-			      "Partition type: %s\n"
-				  "Start CHS address: %d/%d/%d\n"
-				  "End CHS address: %d/%d/%d\n"
-				  "Relative sector: %d\n"
-				  "Total sectors: %d\n"
-				  "Partition size: %0.2f GB",
-				  part->chBootInd == 0x80 ? "Yes" : "No",
-				  part->chType == NTFS_TYPE ? "NTFS" : "Other",
-				  part->chCylinder,
-				  part->chHead,
-				  part->chSector,
-				  part->chLastCylinder,
-				  part->chLastHead,
-				  part->chLastSector,
-				  part->dwRelativeSector,
-				  part->dwNumberSector,
-				  part->dwNumberSector/2097152.0);
-	if(part->chType == 0x07)
-		return part->dwRelativeSector;
-	return -1;
-}
-
-/**
- *	Prints the members of *bootSec into *buff
- *	Returns -1 if error.
- */
-int getBootSectInfo(char* buff, NTFS_BOOT_SECTOR *bootSec) {
-	sprintf(buff, "jumpInstruction: %s\n"
-				  "OEM ID: %s\n"
-				  "BIOS Parameter Block(BPB) data: \n"
-				  "Bytes per logical sector: %u\n"
-				  "Logical sectors per cluster: %u\n"
-				  "Reserved logical sectors: %u\n"
-				  "Media descriptor: %s\n"
-				  "Physical sectors per track: %u\n"
-				  "Number of heads: %u\n"
-				  "Hidden sectors: %d\n"
-				  "Sectors in volume: %" PRId64 "\n"
-				  "Size of volume sectors: %0.2f mb\n"
-				  "\n*Cluster number for MFT: %" PRId64 "\n"
-				  "Mirror of cluster number for MFT: %" PRId64 "\n"
-				  "MFT record size: %d\n"
-				  "Index block size: %d\n"
-				  "\nVolume serial number: %" PRId64 "\n"
-				  "Volume checksum: %d\n"
-				  "End of sector marker: %u\n",
-				  bootSec->chJumpInstruction,
-				  bootSec->chOemID,
-				  (bootSec->bpb).wBytesPerSec,
-				  (bootSec->bpb).uchSecPerClust,
-				  (bootSec->bpb).wReservedSec,
-				  (bootSec->bpb).uchMediaDescriptor == 0xF8?"Hard Disk":"Other",
-				  (bootSec->bpb).wSecPerTrack,
-				  (bootSec->bpb).wNumberOfHeads,
-				  (bootSec->bpb).dwHiddenSec,
-				  (bootSec->bpb).n64TotalSec,
-				  (bootSec->bpb).wBytesPerSec*(bootSec->bpb).n64TotalSec/(1024.0*1024.0),
-				  (bootSec->bpb).n64MFTLogicalClustNum,	/*Cluster number for MFT! */
-				  (bootSec->bpb).n64MFTMirrLoficalClustNum,
-				  (bootSec->bpb).nClustPerMFTRecord,
-				  (bootSec->bpb).nClustPerIndexRecord,
-				  (bootSec->bpb).n64VolumeSerialNum,
-				  (bootSec->bpb).dwCheckSum,
-				  bootSec->wSecMark );
-	return 0;
-}
-
-int getNTFSAttrib(char* buff, NTFS_MFT_FILE_ENTRY_HEADER *mftFileEntry) {
-	sprintf(buff, "File signature: %s\n"
-				  "Offset to the update sequence: %u\n"
-				  "Number of entries in fixup array: %u\n" /*Number times entry written */
-				  "$LogFile Sequence Number (LSN): %" PRId64 "\n"
-				  "Sequence number %u\n"
-				  "Hard link count: %u\n"
-				  "Offset to first attribute: %u\n"
-				  "Flags: %u\n"
-				  "Used size of MFT entry: %d\n"
-				  "Allocated size of MFT entry: %d\n"
-				  "File reference to the base FILE record: %" PRId64 "\n" /*Non zero if attributes not contained in MFT record */
-				  "Next attribute ID: %u\n"
-				  "wFixUpPattern: %u\n" /*Recognise partially written clusters */
-				  "Number of this MFT record: %d\n",
-				  mftFileEntry->fileSignature,
-				  mftFileEntry->wFixupOffset,
-				  mftFileEntry->wFixupSize,
-				  mftFileEntry->n64LogSeqNumber,
-				  mftFileEntry->wSequence,
-				  mftFileEntry->wHardLinks,
-				  mftFileEntry->wAttribOffset,
-				  mftFileEntry->wFlags,
-				  mftFileEntry->dwRecLength,
-				  mftFileEntry->dwAllLength,
-				  mftFileEntry->n64BaseMftRec,
-				  mftFileEntry->wNextAttrID,
-				  mftFileEntry->wFixUpPattern,
-				  mftFileEntry->dwMFTRecNumber);
-	return 0;
-}
-
-int getMFTAttribMembers(char * buff, NTFS_ATTRIBUTE* attrib) {
-	char* tempBuff = malloc(BUFFSIZE);
-	sprintf(tempBuff, "Attribute type: %d\n"
-				  	  "Length of attribute: %d\n"
-				  	  "Non-resident flag: %s\n"
-				  	  "Length of name: %u\n"
-				  	  "Offset to name: %u\n"
-				  	  "Flags: %u\n"
-				  	  "Attribute identifier: %u\n",
-					  attrib->dwType,
-					  attrib->dwFullLength,
-					  attrib->uchNonResFlag == TRUE ? "Non-Resident" : "Resident",
-					  attrib->uchNameLength,
-					  attrib->wNameOffset,
-					  attrib->wFlags,
-					  attrib->wID);
-	if(attrib->uchNonResFlag) { /*If attribute is Non-Resident*/
-		sprintf(buff, "%s", tempBuff);
-		//(attrib->Attr).NonResident;
-
-	} else{ /*Attribute is resident */
-		sprintf(buff, "%s"
-				"Length of attribute content: %d\n"
-				"Offset to attribute content: %u\n"
-				"Indexed: %u\n"
-				"Padding: %u\n",
-				tempBuff,
-				(attrib->Attr).Resident.dwLength,
-				(attrib->Attr).Resident.wAttrOffset,
-				(attrib->Attr).Resident.uchIndexedTag,
-				(attrib->Attr).Resident.uchPadding);
-	}
-	return 0;
-}
+int getPartitionInfo(char *buff, PARTITION *part);
+int getBootSectInfo(char* buff, NTFS_BOOT_SECTOR *bootSec);
+int getNTFSAttrib(char* buff, NTFS_MFT_FILE_ENTRY_HEADER *mftFileEntry);
+int getMFTAttribMembers(char * buff, NTFS_ATTRIBUTE* attrib);
 
 uint32_t dwBytesPerCluster = -1; /*Bytes per cluster on the disk */
 
@@ -377,8 +239,6 @@ int main(int argc, char* argv[]) {
 				else if(mftRecAttrib->uchNonResFlag==TRUE) {
 					uint8_t countRuns = 0;
 					OFFS_LEN_BITFIELD *offs_len_bitField = malloc( sizeof(OFFS_LEN_BITFIELD) );
-					uint64_t *length = malloc( sizeof(uint64_t) ); /*The length and offset data run fields are always 8 or less bytes */
-					int64_t *offset = malloc( sizeof(int64_t) ); /* Offset is signed */
 					uint64_t realSize = (mftRecAttrib->Attr).NonResident.n64RealSize;
 					/*Must check this is within the capabilities of the program */
 					printf("\tReal file size: %" PRId64 " bytes.\n", realSize);
@@ -386,15 +246,18 @@ int main(int argc, char* argv[]) {
 					uint16_t dataRunOffset = (mftRecAttrib->Attr).NonResident.wDatarunOffset;
 					printf("\tData run offset in attribute header: %u out of %u\n", dataRunOffset, mftRecAttrib->dwFullLength);
 					printf("\tProcessing runlist...\n");
+					DataRun *p_head = NULL; /*Allocate for linked data runs */
 					do {
+						uint64_t *length = malloc( sizeof(uint64_t) ); /*The length and offset data run fields are always 8 or less bytes */
+						int64_t *offset = malloc( sizeof(int64_t) ); /* Offset is signed */
 						/*Follow offset to data runs, read first data run. */
 						/*First read it's offset and length nibbles using the bitfield */
 						/*Top four bits represent a length, and the last four bits represent an offset. */
 						if(countRuns == 0) {
 							memcpy(offs_len_bitField, mftBuffer+attribOffset+dataRunOffset, sizeof(OFFS_LEN_BITFIELD));
 						}
-						printf("\tlength of length field of datarun: %u ", offs_len_bitField->bitfield.lengthSize);
-						printf("\tlength of offset field of datarun:: %u\n", offs_len_bitField->bitfield.offsetSize);
+						//printf("\tlength of length field of datarun: %u ", offs_len_bitField->bitfield.lengthSize);
+						//printf("\tlength of offset field of datarun:: %u\n", offs_len_bitField->bitfield.offsetSize);
 
 						*length = 0; /*Initialise to zero since values may be less than 8 bytes long */
 						*offset = 0;
@@ -408,17 +271,22 @@ int main(int argc, char* argv[]) {
 						memcpy(offset, mftBuffer+attribOffset+dataRunOffset, offs_len_bitField->bitfield.offsetSize);
 						dataRunOffset+=offs_len_bitField->bitfield.offsetSize; /*Move offset past offset field */
 
-						printf("\tLength of datarun: %" PRIu64 " clusters\t", *length);
-						printf("\tVCN offset to datarun: %" PRId64 " clusters\n", *offset);
+						p_head = addRun(p_head, length, offset);
+						//printf("\tLength of datarun: %" PRIu64 " clusters\t", *length);
+						//printf("\tVCN offset to datarun: %" PRId64 " clusters\n", *offset);
 						countRuns++;
+
 						/*Copy next bitfield header, check if == 0 for loop termination */
 						memcpy(offs_len_bitField, mftBuffer+attribOffset+dataRunOffset, sizeof(OFFS_LEN_BITFIELD));
-
 					} while(offs_len_bitField->val != 0);
+					p_head = reverseList(p_head);
+					printRuns(buff, p_head);
+					printf("%s", buff);
 					printf("\tFinished processing %u data runs from runlist\n", countRuns);
-					free(length);
-					free(offset);
+
+					freeList(p_head);
 					free(offs_len_bitField);
+					//free(p_head);
 				}
 				attribOffset += mftRecAttrib->dwFullLength; /*Increment the offset by the length of this attribute */
 			} while(attribOffset+8 < mftMetaHeaders[i]->dwRecLength); /*While there are attributes left to inspect */
@@ -426,6 +294,7 @@ int main(int argc, char* argv[]) {
 			free(mftRecAttribTemp);
 		}
 	}
+
 
 	/*---------------------------------- Tidy up ----------------------------------*/
 	for(i = 0; i<P_PARTITIONS; i++) {
@@ -450,4 +319,149 @@ int main(int argc, char* argv[]) {
 	}
 
 	return EXIT_SUCCESS;
+}
+
+/**
+ * Prints the members of *part into *buff, plus some extra derived info.
+ * Returns the relative sector offest for the partition if it is NTFS,
+ * otherwise returns -1.
+ */
+int getPartitionInfo(char *buff, PARTITION *part) {
+	if(part->dwNumberSector == 0) { /*Primary partition entry is empty */
+		sprintf(buff, "Primary partition table entry empty.");
+		return -1;
+	}
+	sprintf(buff, "Is bootable: %s\n"
+			      "Partition type: %s\n"
+				  "Start CHS address: %d/%d/%d\n"
+				  "End CHS address: %d/%d/%d\n"
+				  "Relative sector: %d\n"
+				  "Total sectors: %d\n"
+				  "Partition size: %0.2f GB",
+				  part->chBootInd == 0x80 ? "Yes" : "No",
+				  part->chType == NTFS_TYPE ? "NTFS" : "Other",
+				  part->chCylinder,
+				  part->chHead,
+				  part->chSector,
+				  part->chLastCylinder,
+				  part->chLastHead,
+				  part->chLastSector,
+				  part->dwRelativeSector,
+				  part->dwNumberSector,
+				  part->dwNumberSector/2097152.0);
+	if(part->chType == 0x07)
+		return part->dwRelativeSector;
+	return -1;
+}
+
+/**
+ *	Prints the members of *bootSec into *buff
+ *	Returns -1 if error.
+ */
+int getBootSectInfo(char* buff, NTFS_BOOT_SECTOR *bootSec) {
+	sprintf(buff, "jumpInstruction: %s\n"
+				  "OEM ID: %s\n"
+				  "BIOS Parameter Block(BPB) data: \n"
+				  "Bytes per logical sector: %u\n"
+				  "Logical sectors per cluster: %u\n"
+				  "Reserved logical sectors: %u\n"
+				  "Media descriptor: %s\n"
+				  "Physical sectors per track: %u\n"
+				  "Number of heads: %u\n"
+				  "Hidden sectors: %d\n"
+				  "Sectors in volume: %" PRId64 "\n"
+				  "Size of volume sectors: %0.2f mb\n"
+				  "\n*Cluster number for MFT: %" PRId64 "\n"
+				  "Mirror of cluster number for MFT: %" PRId64 "\n"
+				  "MFT record size: %d\n"
+				  "Index block size: %d\n"
+				  "\nVolume serial number: %" PRId64 "\n"
+				  "Volume checksum: %d\n"
+				  "End of sector marker: %u\n",
+				  bootSec->chJumpInstruction,
+				  bootSec->chOemID,
+				  (bootSec->bpb).wBytesPerSec,
+				  (bootSec->bpb).uchSecPerClust,
+				  (bootSec->bpb).wReservedSec,
+				  (bootSec->bpb).uchMediaDescriptor == 0xF8?"Hard Disk":"Other",
+				  (bootSec->bpb).wSecPerTrack,
+				  (bootSec->bpb).wNumberOfHeads,
+				  (bootSec->bpb).dwHiddenSec,
+				  (bootSec->bpb).n64TotalSec,
+				  (bootSec->bpb).wBytesPerSec*(bootSec->bpb).n64TotalSec/(1024.0*1024.0),
+				  (bootSec->bpb).n64MFTLogicalClustNum,	/*Cluster number for MFT! */
+				  (bootSec->bpb).n64MFTMirrLoficalClustNum,
+				  (bootSec->bpb).nClustPerMFTRecord,
+				  (bootSec->bpb).nClustPerIndexRecord,
+				  (bootSec->bpb).n64VolumeSerialNum,
+				  (bootSec->bpb).dwCheckSum,
+				  bootSec->wSecMark );
+	return 0;
+}
+
+int getNTFSAttrib(char* buff, NTFS_MFT_FILE_ENTRY_HEADER *mftFileEntry) {
+	sprintf(buff, "File signature: %s\n"
+				  "Offset to the update sequence: %u\n"
+				  "Number of entries in fixup array: %u\n" /*Number times entry written */
+				  "$LogFile Sequence Number (LSN): %" PRId64 "\n"
+				  "Sequence number %u\n"
+				  "Hard link count: %u\n"
+				  "Offset to first attribute: %u\n"
+				  "Flags: %u\n"
+				  "Used size of MFT entry: %d\n"
+				  "Allocated size of MFT entry: %d\n"
+				  "File reference to the base FILE record: %" PRId64 "\n" /*Non zero if attributes not contained in MFT record */
+				  "Next attribute ID: %u\n"
+				  "wFixUpPattern: %u\n" /*Recognise partially written clusters */
+				  "Number of this MFT record: %d\n",
+				  mftFileEntry->fileSignature,
+				  mftFileEntry->wFixupOffset,
+				  mftFileEntry->wFixupSize,
+				  mftFileEntry->n64LogSeqNumber,
+				  mftFileEntry->wSequence,
+				  mftFileEntry->wHardLinks,
+				  mftFileEntry->wAttribOffset,
+				  mftFileEntry->wFlags,
+				  mftFileEntry->dwRecLength,
+				  mftFileEntry->dwAllLength,
+				  mftFileEntry->n64BaseMftRec,
+				  mftFileEntry->wNextAttrID,
+				  mftFileEntry->wFixUpPattern,
+				  mftFileEntry->dwMFTRecNumber);
+	return 0;
+}
+
+int getMFTAttribMembers(char * buff, NTFS_ATTRIBUTE* attrib) {
+	char* tempBuff = malloc(BUFFSIZE);
+	sprintf(tempBuff, "Attribute type: %d\n"
+				  	  "Length of attribute: %d\n"
+				  	  "Non-resident flag: %s\n"
+				  	  "Length of name: %u\n"
+				  	  "Offset to name: %u\n"
+				  	  "Flags: %u\n"
+				  	  "Attribute identifier: %u\n",
+					  attrib->dwType,
+					  attrib->dwFullLength,
+					  attrib->uchNonResFlag == TRUE ? "Non-Resident" : "Resident",
+					  attrib->uchNameLength,
+					  attrib->wNameOffset,
+					  attrib->wFlags,
+					  attrib->wID);
+	if(attrib->uchNonResFlag) { /*If attribute is Non-Resident*/
+		sprintf(buff, "%s", tempBuff);
+		//(attrib->Attr).NonResident;
+
+	} else{ /*Attribute is resident */
+		sprintf(buff, "%s"
+				"Length of attribute content: %d\n"
+				"Offset to attribute content: %u\n"
+				"Indexed: %u\n"
+				"Padding: %u\n",
+				tempBuff,
+				(attrib->Attr).Resident.dwLength,
+				(attrib->Attr).Resident.wAttrOffset,
+				(attrib->Attr).Resident.uchIndexedTag,
+				(attrib->Attr).Resident.uchPadding);
+	}
+	return 0;
 }
