@@ -55,7 +55,7 @@ void printRuns(char * buff, DataRun *p_head) {
  */
 int freeList(DataRun *p_head)	{
 
-	printf("\nFreeing RunList: ");
+	printf("\tFreeing RunList: ");
 	DataRun *p_current_item = p_head;
 	int items_freed = 0;
 	while (p_current_item) {

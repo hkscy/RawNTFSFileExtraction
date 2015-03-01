@@ -10,19 +10,21 @@
 
 #include <stdio.h>
 #include <stdlib.h>
-#include <sys/types.h> /*Various data types used elsewhere */
-#include <sys/stat.h>  /*File information (stat et al) */
-#include <fcntl.h>     /*File opening, locking and other operations */
+#include <sys/types.h> 	/*Various data types used elsewhere */
+#include <sys/stat.h>  	/*File information (stat et al) */
+#include <fcntl.h>     	/*File opening, locking and other operations */
 #include <unistd.h>
-#include <errno.h>     /*For errno */
-#include <stdint.h>    /*unitN_t */
+#include <errno.h>     	/*For errno */
+#include <stdint.h>    	/*unitN_t */
 #include <string.h>
-#include <inttypes.h>  /*for (u)int64_t format specifiers PRId64 and PRIu64 */
-#include <wchar.h>	   /*for formatted output of wide characters. */
+#include <inttypes.h>  	/*for (u)int64_t format specifiers PRId64 and PRIu64 */
+#include <wchar.h>	   	/*for formatted output of wide characters. */
+#include <stdbool.h>	/*C99 boolean type */
 
 #include "NTFSStruct.h"
 #include "NTFSAttributes.h"
 #include "RunList.h"
+#include "UnicodeStrings.h"
 
 #define FALSE 0
 #define TRUE 1
@@ -32,7 +34,7 @@
 #define P_OFFEST 0x1BE	/*Partition information begins at offest 0x1BE */
 #define NTFS_TYPE 0x07	/*NTFS partitions are represented by 0x07 in the partition table */
 #define MFT_RECORD_LENGTH 1024 /*MFT entries are 1024 bytes long */
-#define MFT_META_HEADERS 6 /*The first 16 MFT entries are reserved for metadata files */
+#define MFT_META_HEADERS 1 /*The first 16 MFT entries are reserved for metadata files */
 
 static const char BLOCK_DEVICE[] = "/dev/mechastriessand/windows7";
 
@@ -41,6 +43,7 @@ int getBootSectInfo(char* buff, NTFS_BOOT_SECTOR *bootSec);
 int getNTFSAttrib(char* buff, NTFS_MFT_FILE_ENTRY_HEADER *mftFileEntry);
 int getMFTAttribMembers(char * buff, NTFS_ATTRIBUTE* attrib);
 
+FILE * MFT_file_copy;
 uint32_t dwBytesPerCluster = -1; /*Bytes per cluster on the disk */
 
 int main(int argc, char* argv[]) {
@@ -74,13 +77,13 @@ int main(int argc, char* argv[]) {
 		if((readStatus = read( fileDescriptor, priParts[i], sizeof(PARTITION))) == -1){
 				int errsv = errno;
 				printf("Failed to open partition table with error: %s.\n", strerror(errsv));
-			} else {
-				if(priParts[i]->chType == NTFS_TYPE) {	/*If the part table contains an NTFS entry */
-					nTFSParts[nNTFS] = malloc( sizeof(PARTITION) );
-					nTFSParts[nNTFS++] = priParts[i]; /* Increment the NTFS parts counter */
-					getPartitionInfo(buff, priParts[i]);
-					printf("\nPartition%d:\n%s\n",i, buff);
-				}
+		} else {
+			if(priParts[i]->chType == NTFS_TYPE) {	/*If the part table contains an NTFS entry */
+				nTFSParts[nNTFS] = malloc( sizeof(PARTITION) );
+				nTFSParts[nNTFS++] = priParts[i]; /* Increment the NTFS parts counter */
+				getPartitionInfo(buff, priParts[i]);
+				printf("\nPartition%d:\n%s\n",i, buff);
+			}
 		}
 	}
 
@@ -134,6 +137,7 @@ int main(int argc, char* argv[]) {
 		}
 	}
 	for(i = 0; i < MFT_META_HEADERS; i++) { /*For each of the MFT entries */
+		bool isMFTFile = false;	/*Set true only for the MFT entry */
 		mftMetaHeaders[i] = malloc(sizeof(NTFS_MFT_FILE_ENTRY_HEADER)); /*Allocate for the file header */
 		/* Read the MFT entry */
 		if((readStatus = read( fileDescriptor, mftBuffer, MFT_RECORD_LENGTH)) == -1) { /*Read the next record */
@@ -179,6 +183,13 @@ int main(int argc, char* argv[]) {
 						printf("%c", fileName[k]&0xFF); /*Mask just the final 8 bits */
 					}
 					printf("\n");
+
+					/* Check if fileName == $MFT */
+					if( utf8cmpuni("$MFT", fileName, fileNameAttr->bFileNameLength) == 0 ) {
+						isMFTFile = true;
+					} else {
+						isMFTFile = false;
+					}
 
 					free(fileNameAttr);
 				} else if(mftRecAttrib->dwType == OBJECT_ID ) {
@@ -284,6 +295,59 @@ int main(int argc, char* argv[]) {
 					printf("%s", buff);
 					printf("\tFinished processing %u data runs from runlist\n", countRuns);
 
+					/*Now.. I need the DATA attribute from the MFT, so check */
+					/*If this is it, then extract it to a local file */
+					if(isMFTFile && (mftRecAttrib->dwType == DATA)) {
+						printf("\tExtracting MFT DATA Attribute.\n");
+						if((MFT_file_copy = fopen("MFTCopy.indx", "w+")) == NULL) {/*Open/create file, r/w pointer at start */
+							int errsv = errno;
+							printf("Failed to create local file for storing MFT: %s.\n", strerror(errsv));
+							return EXIT_FAILURE;
+						}
+
+						off_t offset_restore = blk_offset; /*Backup the current read offset */
+						off_t nonResReadFrom = 0; /*Offset is relative, so outside the loop */
+
+						DataRun *p_current_item = p_head;
+						while (p_current_item) {    // Loop while the current pointer is not NULL.
+							if (p_current_item->offset && p_current_item->length) {
+								printf("\t%" PRIu64 "\t%" PRId64 "\n", *p_current_item->offset, *p_current_item->length);
+
+								nonResReadFrom +=  dwBytesPerCluster*(*p_current_item->offset);
+
+								/* Move file pointer to the cluster */
+								if((blk_offset = lseek(fileDescriptor, nonResReadFrom, SEEK_CUR)) == -1) {
+									int errsv = errno;
+									printf("Failed to set file pointer with error: %s.\n", strerror(errsv));
+									return EXIT_FAILURE;
+								}
+								size_t readLength = dwBytesPerCluster*(*p_current_item->length);
+								char * dataRun = malloc(readLength);
+								/*Read for length specified in dataRun */
+								if((readStatus = read( fileDescriptor, dataRun, readLength)) == -1){
+									int errsv = errno;
+									printf("Failed to open read MFT from disk with error: %s.\n", strerror(errsv));
+								} else {
+									/*Copy the memory to the local file */
+									if( fwrite(dataRun, readLength, 1, MFT_file_copy) != 1) {
+										int errsv = errno;
+										printf("Write MFT to local file with error: %s.\n", strerror(errsv));
+										return EXIT_FAILURE;
+									}
+								}
+								free(dataRun);
+							} else { printf("\tNo data.\n"); }
+							p_current_item = p_current_item->p_next; /*Advance position in list */
+						}
+
+						if((blk_offset = lseek(fileDescriptor, offset_restore, SEEK_CUR)) == -1) { /*Restore file offset */
+								int errsv = errno;
+								printf("Failed to restore file pointer with error: %s.\n", strerror(errsv));
+								return EXIT_FAILURE;
+						}
+
+					}// end of if(isMFTFile && (mftRecAttrib->dwType == DATA))
+
 					freeList(p_head);
 					free(offs_len_bitField);
 					//free(p_head);
@@ -316,6 +380,11 @@ int main(int argc, char* argv[]) {
 		int errsv = errno;
 		printf("Failed to close block device %s with error: %s.\n", BLOCK_DEVICE, strerror(errsv));
 		return EXIT_FAILURE;
+	}
+
+	/*Close local file copy of MFT if open */
+	if(MFT_file_copy!=NULL) {
+		fclose(MFT_file_copy);
 	}
 
 	return EXIT_SUCCESS;
