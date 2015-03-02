@@ -44,7 +44,9 @@ int getNTFSAttrib(char* buff, NTFS_MFT_FILE_ENTRY_HEADER *mftFileEntry);
 int getMFTAttribMembers(char * buff, NTFS_ATTRIBUTE* attrib);
 
 FILE * MFT_file_copy;
+uint64_t sizeofMFT = 0;
 uint32_t dwBytesPerCluster = -1; /*Bytes per cluster on the disk */
+uint64_t relativePartSector = -1; /*Relative offset in bytes of the NTFS partition table */
 
 int main(int argc, char* argv[]) {
 	int fileDescriptor = 0;
@@ -90,13 +92,14 @@ int main(int argc, char* argv[]) {
 	/*--- Follow relative sector offset of NTFS partitions to find boot sector ----*/
 	NTFS_BOOT_SECTOR *nTFS_Boot = malloc( sizeof(NTFS_BOOT_SECTOR) );	/*Allocate memory for holding the boot sector code*/
 	for(i = 0; i<nNTFS; i++) {
-		if(nTFSParts[i]->chBootInd == 0x80) { /*If this is a Bootable NTFS partition*/
+		if(nTFSParts[i]->chBootInd == 0x00) { /*If this is a Bootable NTFS partition -0x80*/
 			/*Set offest pointer to partition table */
 			if((blk_offset = lseek(fileDescriptor, nTFSParts[i]->dwRelativeSector*SECTOR_SIZE, SEEK_SET)) == -1) {
 				int errsv = errno;
 				printf("Failed to position file pointer to NTFS boot sector with error: %s.\n", strerror(errsv));
 				return EXIT_FAILURE;
 			}
+			relativePartSector = nTFSParts[i]->dwRelativeSector*SECTOR_SIZE;
 			if((readStatus = read( fileDescriptor, nTFS_Boot, sizeof(NTFS_BOOT_SECTOR))) == -1){
 				int errsv = errno;
 				printf("Failed to open NTFS Boot sector for partition %d with error: %s.\n",i , strerror(errsv));
@@ -184,7 +187,7 @@ int main(int argc, char* argv[]) {
 					}
 					printf("\n");
 
-					/* Check if fileName == $MFT */
+					/* Check if fileName == $MFT, set toggle.uu */
 					if( utf8cmpuni("$MFT", fileName, fileNameAttr->bFileNameLength) == 0 ) {
 						isMFTFile = true;
 					} else {
@@ -306,44 +309,62 @@ int main(int argc, char* argv[]) {
 						}
 
 						off_t offset_restore = blk_offset; /*Backup the current read offset */
-						off_t nonResReadFrom = 0; /*Offset is relative, so outside the loop */
 
+						/* Move file pointer to start of partition */
+						if((blk_offset = lseek( fileDescriptor, relativePartSector, SEEK_SET )) == -1) {
+							int errsv = errno;
+							printf("Failed to set file pointer with error: %s.\n", strerror(errsv));
+							return EXIT_FAILURE;
+						}
+						//off_t nonResReadFrom = 0;
 						DataRun *p_current_item = p_head;
 						while (p_current_item) {    // Loop while the current pointer is not NULL.
 							if (p_current_item->offset && p_current_item->length) {
 								printf("\t%" PRIu64 "\t%" PRId64 "\n", *p_current_item->offset, *p_current_item->length);
 
-								nonResReadFrom +=  dwBytesPerCluster*(*p_current_item->offset);
+								off_t nonResReadFrom =  dwBytesPerCluster*(*p_current_item->offset);
+								printf("\tnonResReadFrom: %" PRId64 "\n", nonResReadFrom);
 
 								/* Move file pointer to the cluster */
-								if((blk_offset = lseek(fileDescriptor, nonResReadFrom, SEEK_CUR)) == -1) {
+								if((blk_offset = lseek( fileDescriptor, nonResReadFrom, SEEK_CUR )) == -1) {
 									int errsv = errno;
 									printf("Failed to set file pointer with error: %s.\n", strerror(errsv));
 									return EXIT_FAILURE;
 								}
+								printf("\tblk_offset = %" PRId64 "\n", blk_offset);
 								size_t readLength = dwBytesPerCluster*(*p_current_item->length);
 								char * dataRun = malloc(readLength);
+
 								/*Read for length specified in dataRun */
-								if((readStatus = read( fileDescriptor, dataRun, readLength)) == -1){
+								if((readStatus = read( fileDescriptor, dataRun, readLength)) == -1 ){
 									int errsv = errno;
 									printf("Failed to open read MFT from disk with error: %s.\n", strerror(errsv));
 								} else {
+									// printf("readStatus: %" PRId64 "\n", readStatus); // Gives length written
 									/*Copy the memory to the local file */
-									if( fwrite(dataRun, readLength, 1, MFT_file_copy) != 1) {
+									if( fwrite( dataRun, readLength, 1, MFT_file_copy ) != 1) {
 										int errsv = errno;
 										printf("Write MFT to local file with error: %s.\n", strerror(errsv));
 										return EXIT_FAILURE;
+									} else {
+										sizeofMFT += readLength;
 									}
 								}
 								free(dataRun);
 							} else { printf("\tNo data.\n"); }
-							p_current_item = p_current_item->p_next; /*Advance position in list */
-						}
-
-						if((blk_offset = lseek(fileDescriptor, offset_restore, SEEK_CUR)) == -1) { /*Restore file offset */
+							/*Rewind position by length of the data run */
+							if((blk_offset = lseek( fileDescriptor, (-1)*(*p_current_item->length)*dwBytesPerCluster, SEEK_CUR )) == -1) {
 								int errsv = errno;
-								printf("Failed to restore file pointer with error: %s.\n", strerror(errsv));
+								printf("Failed to set file pointer with error: %s.\n", strerror(errsv));
 								return EXIT_FAILURE;
+							}
+							p_current_item = p_current_item->p_next; /*Advance position in list */
+						} // while (p_current_item)
+
+						if((blk_offset = lseek(fileDescriptor, offset_restore, SEEK_SET)) == -1) { /*Restore file offset */
+							int errsv = errno;
+							printf("Failed to restore file pointer with error: %s.\n", strerror(errsv));
+							return EXIT_FAILURE;
 						}
 
 					}// end of if(isMFTFile && (mftRecAttrib->dwType == DATA))
@@ -359,6 +380,18 @@ int main(int argc, char* argv[]) {
 		}
 	}
 
+	/*---------------------- Process INDX records in MFT File ---------------------*/
+	printf("Processing INDX records from MFT...\n");
+	if((fseek(MFT_file_copy, 0, SEEK_SET)) != 0 ) { /*Set fp to beginning of file */
+		int errsv = errno;
+		printf("Error handing local MFT file copy: %s.\n", strerror(errsv));
+		return EXIT_FAILURE;
+	}
+	char * ptr = malloc( 4 );
+	fread(ptr, 4, 1, MFT_file_copy);
+	printf("First four bytes: %s\n", ptr);
+	free(ptr);
+	printf("Size of MFT: %" PRId64 "\n", sizeofMFT);
 
 	/*---------------------------------- Tidy up ----------------------------------*/
 	for(i = 0; i<P_PARTITIONS; i++) {
