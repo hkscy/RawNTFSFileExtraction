@@ -24,11 +24,9 @@
 #include "NTFSStruct.h"
 #include "NTFSAttributes.h"
 #include "RunList.h"
-#include "UnicodeStrings.h"
 #include "Debug.h"
+#include "Utility.h"
 
-#define FALSE 0
-#define TRUE 1
 #define BUFFSIZE 1024			/*Generic data buffer size */
 #define P_PARTITIONS 4			/*Number of primary partitions */
 #define SECTOR_SIZE 512			/*Size of one sector */
@@ -193,39 +191,15 @@ int main(int argc, char* argv[]) {
 				printf("ATTRIBUTE_LIST attribute\n");
 			}
 			else if(mftRecAttrib->dwType == FILE_NAME) { /*If is FILE_NAME attribute */
-				FILE_NAME_ATTR *fileNameAttr = malloc( mftRecAttrib->Attr.Resident.dwLength + 1 );
-				memcpy(fileNameAttr, mftBuffer+attribOffset+(mftRecAttrib->Attr).Resident.wAttrOffset,
-						(mftRecAttrib->Attr).Resident.dwLength);
-				uint16_t* fileName = fileNameAttr->arrUnicodeFileName;
-				utfFileName = malloc( fileNameAttr->bFileNameLength );
-				*utfFileName = '\0';
-				int  k = 0;
-				/* Convert unicode filename to UTF filename */
-				for(; k<fileNameAttr->bFileNameLength; k++) {
-					sprintf(utfFileName + strlen(utfFileName), "%c", fileName[k]&0xFF);
-				}
-
-				if(DEBUG) {
-					printf("FILE_NAME attribute:\n");
-					printf("\tFile name length: %u\t", fileNameAttr->bFileNameLength);
-					printf("\tNamespace: %u\t", fileNameAttr->bFilenameNamespace);
-					/* Print out the file name of the record*/
-					printf("\tFile name: ");
-					int  k = 0;
-					for(; k<fileNameAttr->bFileNameLength; k++) {
-						printf("%c", fileName[k]&0xFF); /*Mask just the final 8 bits */
-					}
-					printf("\n");
-				}
+				utfFileName = getFileName(mftRecAttrib, mftBuffer, attribOffset);
 
 				/* Check if fileName == $MFT, set toggle */
-				if( utf8cmpuni("$MFT", fileName, fileNameAttr->bFileNameLength) == 0 ) {
+				//if( utf8cmpuni("$MFT", fileName, fileNameAttr->bFileNameLength) == 0 ) {
+				if((strcmp("$MFT", utfFileName)) == 0) {
 					isMFTFile = true;
 				} else {
 					isMFTFile = false;
 				}
-
-				free(fileNameAttr);
 			} else if(DEBUG && mftRecAttrib->dwType == OBJECT_ID ) {
 				printf("OBJECT_ID attribute\n");
 			} else if(DEBUG && mftRecAttrib->dwType == SECURITY_DESCRIPTOR) {
@@ -263,9 +237,9 @@ int main(int argc, char* argv[]) {
 				if(DEBUG) printf("Unknown attribute of type: %d.\n", mftRecAttrib->dwType);
 			}
 			/* Is attribute resident? */
-			if(DEBUG) printf("\t%s ", mftRecAttrib->uchNonResFlag==TRUE?"Non-Resident.":"Resident.");
+			if(DEBUG) printf("\t%s ", mftRecAttrib->uchNonResFlag==true?"Non-Resident.":"Resident.");
 
-			if(mftRecAttrib->uchNonResFlag==FALSE) { /*Is resident */
+			if(mftRecAttrib->uchNonResFlag==false) { /*Is resident */
 				uint32_t attribDataSize = (mftRecAttrib->Attr.Resident).dwLength;
 				if(DEBUG && VERBOSE) {
 					printf("\tData size: %d Bytes.\n", attribDataSize);
@@ -284,7 +258,7 @@ int main(int argc, char* argv[]) {
 				}
 			}
 			/*--------- If the attribute data is non-resident then... ---------*/
-			else if(mftRecAttrib->uchNonResFlag==TRUE) {
+			else if(mftRecAttrib->uchNonResFlag==true) {
 				uint8_t countRuns = 0;
 				OFFS_LEN_BITFIELD *offs_len_bitField = malloc( sizeof(OFFS_LEN_BITFIELD) );
 				uint64_t realSize = (mftRecAttrib->Attr).NonResident.n64RealSize;
@@ -478,10 +452,12 @@ int main(int argc, char* argv[]) {
 				printf("%s\n", buff);
 			}
 			if(mftRecAttr->dwType == FILE_NAME) {
-				printf("File name found!\n");
+				char * fileName = getFileName(mftRecAttr, mftBuffer, attrOffset);
+				printf("File found: %s\n", fileName);
+				free(fileName);
 			}
 			countAttr++;
-			printf("%d attributes found\n", countAttr);
+			//printf("%d attributes found\n", countAttr);
 			/*Increment the offset by the length of the current attribute */
 			attrOffset += mftRecAttr->dwFullLength;
 		} while(attrOffset+8 < mftFileH->dwRecLength); /*While there are attributes left to inspect */
@@ -655,16 +631,15 @@ int getMFTAttribMembers(char * buff, NTFS_ATTRIBUTE* attrib) {
 				  	  "Attribute identifier: %u\n",
 					  attrib->dwType,
 					  attrib->dwFullLength,
-					  attrib->uchNonResFlag == TRUE ? "Non-Resident" : "Resident",
+					  attrib->uchNonResFlag == true ? "Non-Resident" : "Resident",
 					  attrib->uchNameLength,
 					  attrib->wNameOffset,
 					  attrib->wFlags,
 					  attrib->wID);
-	if(attrib->uchNonResFlag) { /*If attribute is Non-Resident*/
-		sprintf(buff, "%s", tempBuff);
-		//(attrib->Attr).NonResident;
 
-	} else{ /*Attribute is resident */
+	if(attrib->uchNonResFlag) { /*Attribute is Non-Resident*/
+		sprintf(buff, "%s", tempBuff);
+	} else { 					/*Attribute is resident */
 		sprintf(buff, "%s"
 				"Length of attribute content: %d\n"
 				"Offset to attribute content: %u\n"
