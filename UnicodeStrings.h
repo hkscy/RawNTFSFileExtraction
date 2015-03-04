@@ -1,3 +1,5 @@
+#include "Debug.h"
+
 int utf8cmpuni(char * utfString, uint16_t * uniString, uint8_t length);
 
 /**
@@ -19,6 +21,6 @@ int utf8cmpuni(char * utfString, uint16_t * uniString, uint8_t length) {
 			ret++;
 		}
 	}
-	//printf("utf8cmpuni returns: %d", ret);
+	if(DEBUG && VERBOSE) printf("utf8cmpuni returns: %d", ret);
 	return ret;
 }

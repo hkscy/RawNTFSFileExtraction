@@ -1,4 +1,5 @@
 #include <inttypes.h>
+#include "Debug.h"
 
 /*
  * Non-resident attributes are stored in intervals of clusters called runs.
@@ -55,7 +56,7 @@ void printRuns(char * buff, DataRun *p_head) {
  */
 int freeList(DataRun *p_head)	{
 
-	printf("\tFreeing RunList: ");
+	if(DEBUG && VERBOSE) printf("\tFreeing RunList: ");
 	DataRun *p_current_item = p_head;
 	int items_freed = 0;
 	while (p_current_item) {
@@ -73,7 +74,7 @@ int freeList(DataRun *p_head)	{
 	    p_current_item = p_next;	// Move to the next item
 	    items_freed++;
 	}
-	printf("Freed %d data runs in total\n", items_freed);
+	if(DEBUG && VERBOSE) printf("Freed %d data runs in total\n", items_freed);
 	//free(p_head); 					// Free the head data run structure.
 	return items_freed;
 }
