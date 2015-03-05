@@ -1,5 +1,6 @@
 #include "Debug.h"
 
+/*NTFS Attribute types */
 #define STANDARD_INFORMATION 0x10	/*MFT Record attribute constants */
 #define ATTRIBUTE_LIST 0x20
 #define FILE_NAME 0x30
@@ -14,9 +15,39 @@
 #define REPARSE_POINT 0xC0
 #define EA_INFORMATION 0xD0
 #define EA 0xE0
-#define LOGGED_UTILITY_STREAM (0x100)
+#define LOGGED_UTILITY_STREAM 0x100
+
+/*File permissions */
+#define RDONLY		0x0001
+#define HIDDEN 		0x0002
+#define SYSTEM 		0x0004
+#define	ARCHIVE		0x0020
+#define DEVICE 		0X0040
+#define NORMAL		0x0080
+#define TEMP		0x0100
+#define SPARSE		0x0200
+#define REPARSE_PT	0x0400
+#define COMPRESSED	0x0800
+#define OFFLINE		0x1000
+#define	NOTINDEXED 	0x2000
+#define ENCRYPTED	0X4000
 
 #pragma pack(push, 1) /*Pack structures to a one byte alignment */
+
+	typedef struct _STD_INFORMATION {
+		uint64_t	fileCreateTime;		//C Time
+		uint64_t	fileAltTime;		//A Time
+		uint64_t	mftChangeTime;		//M Time
+		uint64_t	fileReadTime;		//R Time
+		uint32_t	filePermissions;	//DOS File Permissions
+		uint32_t	maxNumVersions;
+		uint32_t	versionNum;
+		uint32_t	classID;
+		uint32_t	ownerID2KONLY;		//Unused beyond win2k
+		uint32_t	securityID2KONLY;	//Unused beyond win2k
+		uint64_t	quota2KONLY;		//Unused beyond win2k
+		uint64_t	updSeqNum2KONLY;	//Unused beyond win2k
+	} STD_INFORMATION;
 
 	/* http://0cch.net/ntfsdoc/attributes/file_name.html */
 	typedef struct _FILE_NAME_ATTR {
@@ -47,10 +78,10 @@
  *
  * 	returns the fileName in 8-bit character width.
  *
- * 	WARNING: Memory is allocated for utfFileName, need to free the returned pointer.
+ * 	WARNING: Memory is allocated for asciiFileName, need to free the returned pointer.
  */
 char * getFileName(NTFS_ATTRIBUTE * mftRecAttr, char * mftBuffer, uint16_t offs ) {
-	char * utfFileName;
+	char * asciiFileName;
 
 	if(!mftRecAttr->dwType == FILE_NAME) { /*Make sure this is a FILE_NAME attribute */
 		return NULL;
@@ -60,18 +91,20 @@ char * getFileName(NTFS_ATTRIBUTE * mftRecAttr, char * mftBuffer, uint16_t offs 
 	memcpy(fileNameAttr, mftBuffer+offs+(mftRecAttr->Attr).Resident.wAttrOffset,
 										(mftRecAttr->Attr).Resident.dwLength);
 
-	uint16_t* fileName = fileNameAttr->arrUnicodeFileName;
+	uint16_t* wFileName = fileNameAttr->arrUnicodeFileName;
 
-	utfFileName = malloc( fileNameAttr->bFileNameLength );
-	*utfFileName = '\0';
+	asciiFileName = malloc( fileNameAttr->bFileNameLength + 1 );
+	*asciiFileName = '\0';
 
 	int  k;
 	/* Convert UNICODE filename to ASCII filename */
 	for(k = 0; k<fileNameAttr->bFileNameLength; k++) {
-		sprintf(utfFileName + strlen(utfFileName), "%c", fileName[k]&0xFF);
+		if((wFileName[k] & 0xFF) > 20 ) { /*Bottom 20 are control characters */
+			sprintf(asciiFileName + strlen(asciiFileName), "%c", wFileName[k]&0xFF);
+		}
 	}
 
-	if(DEBUG) {
+	if(false) {
 		printf("FILE_NAME attribute:\n");
 		printf("\tFile name length: %u\t", fileNameAttr->bFileNameLength);
 		printf("\tNamespace: %u\t", fileNameAttr->bFilenameNamespace);
@@ -80,12 +113,12 @@ char * getFileName(NTFS_ATTRIBUTE * mftRecAttr, char * mftBuffer, uint16_t offs 
 		printf("\tFile name: ");
 		int  k = 0;
 		for(; k<fileNameAttr->bFileNameLength; k++) {
-			printf("%c", fileName[k]&0xFF); /*Mask just the final 8 bits */
+			printf("%c", wFileName[k]&0xFF); /*Mask just the final 8 bits */
 		}
 		printf("\n");
 	}
 
 	free(fileNameAttr);
-	return utfFileName;
+	return asciiFileName;
 }
 

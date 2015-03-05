@@ -33,7 +33,8 @@
 #define P_OFFSET 0x1BE			/*Partition information begins at offset 0x1BE */
 #define NTFS_TYPE 0x07			/*NTFS partitions are represented by 0x07 in the partition table */
 #define MFT_RECORD_LENGTH 1024 	/*MFT entries are 1024 bytes long */
-#define MFT_META_HEADERS 1 		/*The first 16 MFT entries are reserved for meta data files */
+#define IN_USE		0x01		/*MFT FILE0 record flags */
+#define DIRECTORY	0x02
 
 static const char BLOCK_DEVICE[] = "/dev/mechastriessand/windows7";
 
@@ -143,7 +144,8 @@ int main(int argc, char* argv[]) {
 		/*Find the root directory metafile entry in the MFT, and extract its index allocation attributes */
 		/*$MFT is always the first MFT record, and it's mirror the second */
 		NTFS_MFT_FILE_ENTRY_HEADER *mftMetaMFT;
-		mftMetaMFT = malloc( MFT_META_HEADERS*sizeof(NTFS_MFT_FILE_ENTRY_HEADER) );
+		//mftMetaMFT = malloc( MFT_META_HEADERS*sizeof(NTFS_MFT_FILE_ENTRY_HEADER) );
+
 		/*Move file pointer to the absolute MFT location */
 		if(u64bytesAbsoluteMFT > 0) {
 			lseekAbs(blkDevDescriptor, u64bytesAbsoluteMFT);
@@ -151,7 +153,7 @@ int main(int argc, char* argv[]) {
 
 		//for(i = 0; i < MFT_META_HEADERS; i++) { /*For each of the MFT entries */
 		bool isMFTFile = false;	/*Set true only for the MFT entry */
-		char * utfFileName = NULL;
+		char * ascFileName = NULL;
 		mftMetaMFT = malloc( sizeof(NTFS_MFT_FILE_ENTRY_HEADER) ); /*Allocate for the file header */
 		/* Read the MFT entry */
 		if((readStatus = read( blkDevDescriptor, mftBuffer, MFT_RECORD_LENGTH)) == -1) { /*Read the next record */
@@ -191,11 +193,9 @@ int main(int argc, char* argv[]) {
 				printf("ATTRIBUTE_LIST attribute\n");
 			}
 			else if(mftRecAttrib->dwType == FILE_NAME) { /*If is FILE_NAME attribute */
-				utfFileName = getFileName(mftRecAttrib, mftBuffer, attribOffset);
-
+				ascFileName = getFileName(mftRecAttrib, mftBuffer, attribOffset);
 				/* Check if fileName == $MFT, set toggle */
-				//if( utf8cmpuni("$MFT", fileName, fileNameAttr->bFileNameLength) == 0 ) {
-				if((strcmp("$MFT", utfFileName)) == 0) {
+				if( strcmp(ascFileName, "$MFT" ) == 0 ) {
 					isMFTFile = true;
 				} else {
 					isMFTFile = false;
@@ -238,7 +238,6 @@ int main(int argc, char* argv[]) {
 			}
 			/* Is attribute resident? */
 			if(DEBUG) printf("\t%s ", mftRecAttrib->uchNonResFlag==true?"Non-Resident.":"Resident.");
-
 			if(mftRecAttrib->uchNonResFlag==false) { /*Is resident */
 				uint32_t attribDataSize = (mftRecAttrib->Attr.Resident).dwLength;
 				if(DEBUG && VERBOSE) {
@@ -320,17 +319,17 @@ int main(int argc, char* argv[]) {
 				/*If this is it, then extract it to a local file*/
 				if(isMFTFile && (mftRecAttrib->dwType == DATA)) {
 					printf("\t$MFT meta file found.\n");
-					uint8_t fileNameLen = snprintf(NULL, 0, "%s%d", utfFileName , workingPartition) + 1; // \0 terminated
+					uint8_t fileNameLen = snprintf(NULL, 0, "%s%d", ascFileName , workingPartition) + 1; // \0 terminated
 					char * fileName = malloc( fileNameLen );
 
-					snprintf(fileName, fileNameLen, "%s%d.data", utfFileName, workingPartition);
+					snprintf(fileName, fileNameLen, "%s%d.data", ascFileName, workingPartition);
 					if((MFT_file_copy = fopen(fileName, "w+")) == NULL) {/*Open/create file, r/w pointer at start */
 						int errsv = errno;
-						printf("Failed to create local file for storing %s: %s.\n", utfFileName, strerror(errsv));
+						printf("Failed to create local file for storing %s: %s.\n", ascFileName, strerror(errsv));
 						return EXIT_FAILURE;
 					}
 					if(countRuns > 1) {
-						printf("\t%s is fragmented on disk, located %u fragments.\n", utfFileName, countRuns);
+						printf("\t%s is fragmented on disk, located %u fragments.\n", ascFileName, countRuns);
 					}
 					printf("\tWriting DATA attribute to local %s file\n", fileName);
 					free(fileName);
@@ -338,7 +337,6 @@ int main(int argc, char* argv[]) {
 					off_t offset_restore = blk_offset; /*Backup the current read offset */
 
 					/* Move file pointer to start of partition */
-
 					if((blk_offset = lseek( blkDevDescriptor, relativePartSector, SEEK_SET )) == -1) {
 						int errsv = errno;
 						printf("Failed to set file pointer with error: %s.\n", strerror(errsv));
@@ -373,12 +371,13 @@ int main(int argc, char* argv[]) {
 									int errsv = errno;
 									printf("Write MFT to local file with error: %s.\n", strerror(errsv));
 									return EXIT_FAILURE;
-								} else {
-									sizeofMFT += readLength;
 								}
+								sizeofMFT += readLength;
 							}
 							free(dataRun);
-						} else { if(DEBUG) printf("\tNo data.\n"); }
+						} else {
+							if(DEBUG) printf("\tNo data.\n");
+						}
 						/*Rewind position (-1) by length of the data run */
 						lseekRel(blkDevDescriptor, (-1)*(*p_current_item->length)*dwBytesPerCluster);
 						p_current_item = p_current_item->p_next; /*Advance position in list */
@@ -398,8 +397,8 @@ int main(int argc, char* argv[]) {
 		} while(attribOffset+8 < mftMetaMFT->dwRecLength); /*While there are attributes left to inspect */
 		free(mftRecAttrib);
 		free(mftRecAttribTemp);
-		if(utfFileName != NULL) {
-			free(utfFileName);
+		if(ascFileName != NULL) {
+			free(ascFileName);
 		}
 		free(nTFS_Boot);		/*Free Boot sector memory */
 
@@ -410,13 +409,12 @@ int main(int argc, char* argv[]) {
 		fclose(MFT_file_copy);
 	}
 
-
 	/*------------------- Process FILE records from extracted MFT  ------------------*/
 	printf("\nProcessing MFT...\n");
-	int countFiles = 0;
+	int countRecords = 0;
 
 	/*Open file, r pointer at start */
-	if((MFT_file_copy = fopen("$MFT0", "r+")) == NULL) {
+	if((MFT_file_copy = fopen("$MFT1", "r+")) == NULL) {
 		int errsv = errno;
 		printf("Failed to open file: %s.\n", strerror(errsv));
 		return EXIT_FAILURE;
@@ -429,53 +427,101 @@ int main(int argc, char* argv[]) {
 		return EXIT_FAILURE;
 	}
 
-	NTFS_MFT_FILE_ENTRY_HEADER *mftFileH;
-	mftFileH = malloc( sizeof(NTFS_MFT_FILE_ENTRY_HEADER) ); /*Allocate for the FILE0 header */
-	NTFS_ATTRIBUTE *mftRecAttr, *mftRecAttrTmp = malloc( sizeof(NTFS_ATTRIBUTE) );
+	NTFS_MFT_FILE_ENTRY_HEADER *mftFileH = malloc( sizeof(NTFS_MFT_FILE_ENTRY_HEADER) ); /*Allocate for the FILE0 header */
+	NTFS_ATTRIBUTE *mftRecAttrTmp = malloc( sizeof(NTFS_ATTRIBUTE) ); /*Attribute header size */
+	NTFS_ATTRIBUTE *mftRecAttr = malloc( MFT_RECORD_LENGTH ); /*Attribute size << record size */
+
+	int countFiles = 0, countDelEntity = 0, countDir = 0, countOther = 0;
+	int countBadAttr = 0;
+	int countFileNames = 0;
+
 	while((readStatus = fread(mftBuffer, MFT_RECORD_LENGTH, 1, MFT_file_copy)) != 0) {
 		/*Read in one whole MFT record to mftBuffer, each time loop iterates */
-		/*Copy MFT header to struct to extract attribute(s) offset */
+		/*Extract MFT header */
 		memcpy(mftFileH, mftBuffer, sizeof(NTFS_MFT_FILE_ENTRY_HEADER));
-		if(DEBUG && VERBOSE) printf("%s\t", mftFileH->fileSignature);
-		uint16_t attrOffset = mftFileH->wAttribOffset; /*Offset to attributes */
+		if(VERBOSE && DEBUG) {
+			getFILE0Attrib(buff, mftFileH);
+			printf("%s\n", buff);
+		}
+		/*Each record starts with signature 'FILE0', check this. */
+		if(!strcmp(mftFileH->fileSignature, "FILE0") == 0) {
+			printf("MFT file corrupted.\n");
+			return EXIT_FAILURE;
+		}
 
-		/*------------------------- Get MFT Record attributes ------------------------*/
-		int countAttr = 0;
+		char * aFileName = NULL;
+
+		/*Check file flags on record, determine record type */
+		uint16_t mftFlags = mftFileH->wFlags;
+		if(mftFlags==IN_USE) {
+			countFiles++;
+		} else if (mftFlags==!IN_USE) {
+			countDelEntity++;
+		} else if (mftFlags==IN_USE||DIRECTORY) {
+			countDir++;
+		} else {
+			countOther++;
+			if(DEBUG)printf("%u\t", mftFlags);
+		}
+
+		/*---------------------------- Get MFT Record attributes ---------------------------*/
+		uint16_t attrOffset = mftFileH->wAttribOffset; 	 	    /*Offset to first attribute */
 		do {
-			/*---------------------- Follow attribute(s) offset position(s) ---------------------*/
+			/*------- Attribute size if unknown, so get header first which contains size -------*/
 			memcpy(mftRecAttrTmp, mftBuffer+attrOffset, sizeof(NTFS_ATTRIBUTE));
-			/*Determine actual attribute length and use to copy full attribute */
-			mftRecAttr = malloc(mftRecAttrTmp->dwFullLength);
+
+			/*- NOTE: Some attributes have impossible record lengths > 1024, this breaks things -*/
+			if(mftRecAttrTmp->dwFullLength > MFT_RECORD_LENGTH-attrOffset) {
+				if(DEBUG) {
+					printf("Bad record attribute:\n");
+					getMFTAttribMembers(buff,mftRecAttrTmp);
+					printf("%s\n", buff);
+				}
+				countBadAttr++;
+				break;
+			}
+			/*-------- Determine actual attribute length and use to copy full attribute --------*/
 			memcpy(mftRecAttr, mftBuffer+attrOffset, mftRecAttrTmp->dwFullLength);
-			if (VERBOSE & DEBUG) {
-				getMFTAttribMembers(buff, mftRecAttr);
-				printf("%s\n", buff);
-			}
-			if(mftRecAttr->dwType == FILE_NAME) {
-				char * fileName = getFileName(mftRecAttr, mftBuffer, attrOffset);
-				printf("File found: %s\n", fileName);
-				free(fileName);
-			}
-			countAttr++;
-			//printf("%d attributes found\n", countAttr);
-			/*Increment the offset by the length of the current attribute */
-			attrOffset += mftRecAttr->dwFullLength;
-		} while(attrOffset+8 < mftFileH->dwRecLength); /*While there are attributes left to inspect */
 
-//		printf("FILE has %d attributes\n", countAttr);
-//		NTFS_ATTRIBUTE *mftRecAttrib = malloc( sizeof(NTFS_ATTRIBUTE) );
-//		memcpy(mftRecAttrib, mftBuffer+attrOffset, sizeof(NTFS_ATTRIBUTE));
-		//printf("%u\t", mftRecAttrib->uchNonResFlag);
-//		free(mftRecAttrib);
+			/*---------------------------- Get file name from record ---------------------------*/
+			if(mftRecAttr->dwType == FILE_NAME) { /*If is FILE_NAME attribute */
+				aFileName = getFileName(mftRecAttr, mftBuffer, attrOffset);
+				printf("%s\n", aFileName);
+				free(aFileName);
+				countFileNames++;
+			}
 
-		countFiles++;
+
+			/*Get Directory information  */
+			if(mftRecAttr->dwType == INDEX_ROOT) {
+
+			}
+
+			/* Get Directory information, always non-resident (INDEX_ROOT is resident) */
+			if(mftRecAttr->dwType == INDEX_ALLOCATION) {
+
+			}
+
+		attrOffset += mftRecAttr->dwFullLength; /*Increment the offset by the length of this attribute */
+	} while(attrOffset+8 < mftFileH->dwRecLength); /*While there are attributes left to inspect */
+
+		countRecords++;
+		//if(countRecords > 48) break; //Debug break out.
 	}
+	printf("\nfiles: %d\tdirectories: %d\n"
+			"deleted entities: %d\tOther entities: %d\n",
+			countFiles, countDir,
+			countDelEntity, countOther);
+	printf("Bad record attributes: %d\n", countBadAttr);
+	printf("File names: %d\n", countFileNames);
+
 	free(mftFileH);
 	free(mftRecAttr);
 	free(mftRecAttrTmp);
-	printf("%d FILE records processed.\n", countFiles);
+	printf("%d FILE records processed.\n", countRecords);
 
-	if(MFT_file_copy!=NULL) {
+
+	if(MFT_file_copy != NULL) {
 		fclose(MFT_file_copy);
 	}
 
@@ -622,8 +668,8 @@ int getFILE0Attrib(char* buff, NTFS_MFT_FILE_ENTRY_HEADER *mftFileEntry) {
  */
 int getMFTAttribMembers(char * buff, NTFS_ATTRIBUTE* attrib) {
 	char* tempBuff = malloc(BUFFSIZE);
-	sprintf(tempBuff, "Attribute type: %d\n"
-				  	  "Length of attribute: %d\n"
+	sprintf(tempBuff, "Attribute type: %d\n"// PRIu32 "\n"
+				  	  "Length of attribute: %d\n"//%" PRIu32 "\n",
 				  	  "Non-resident flag: %s\n"
 				  	  "Length of name: %u\n"
 				  	  "Offset to name: %u\n"
@@ -636,10 +682,11 @@ int getMFTAttribMembers(char * buff, NTFS_ATTRIBUTE* attrib) {
 					  attrib->wNameOffset,
 					  attrib->wFlags,
 					  attrib->wID);
-
-	if(attrib->uchNonResFlag) { /*Attribute is Non-Resident*/
+	if(attrib->uchNonResFlag) { /*If attribute is Non-Resident*/
 		sprintf(buff, "%s", tempBuff);
-	} else { 					/*Attribute is resident */
+		//(attrib->Attr).NonResident;
+
+	} else{ /*Attribute is resident */
 		sprintf(buff, "%s"
 				"Length of attribute content: %d\n"
 				"Offset to attribute content: %u\n"
