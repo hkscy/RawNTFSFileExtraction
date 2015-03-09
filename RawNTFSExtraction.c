@@ -26,6 +26,7 @@
 #include "RunList.h"
 #include "Debug.h"
 #include "Utility.h"
+#include "FileLUT.h"
 
 #define BUFFSIZE 1024			/*Generic data buffer size */
 #define P_PARTITIONS 4			/*Number of primary partitions */
@@ -435,6 +436,8 @@ int main(int argc, char* argv[]) {
 	int countBadAttr = 0;
 	int countFileNames = 0;
 
+	File *files = NULL; /* Init the list of files to be constructed */
+
 	while((readStatus = fread(mftBuffer, MFT_RECORD_LENGTH, 1, MFT_file_copy)) != 0) {
 		/*Read in one whole MFT record to mftBuffer, each time loop iterates */
 		/*Extract MFT header */
@@ -483,30 +486,63 @@ int main(int argc, char* argv[]) {
 			/*-------- Determine actual attribute length and use to copy full attribute --------*/
 			memcpy(mftRecAttr, mftBuffer+attrOffset, mftRecAttrTmp->dwFullLength);
 
+			if(mftRecAttr->dwType == STANDARD_INFORMATION) {
+				if(DEBUG) {
+					STD_INFORMATION *stdInfo = malloc( sizeof(STANDARD_INFORMATION) );
+					uint32_t fileP = getFilePermissions(stdInfo);
+					printf("%" PRIu32 " ", fileP);
+					free(stdInfo);
+				}
+			}
+
 			/*---------------------------- Get file name from record ---------------------------*/
-			if(mftRecAttr->dwType == FILE_NAME) { /*If is FILE_NAME attribute */
+			/*------------------ Generally have more than one per actual file ------------------*/
+			else if(mftRecAttr->dwType == FILE_NAME) { 					/*If is FILE_NAME attribute */
 				aFileName = getFileName(mftRecAttr, mftBuffer, attrOffset);
-				printf("%s\n", aFileName);
-				free(aFileName);
+				//printf("%s\n", aFileName);
+				//free(aFileName);
 				countFileNames++;
 			}
 
-
-			/*Get Directory information  */
-			if(mftRecAttr->dwType == INDEX_ROOT) {
+			/*Get Directory information, resident.  */
+			else if(mftRecAttr->dwType == INDEX_ROOT) {
 
 			}
 
 			/* Get Directory information, always non-resident (INDEX_ROOT is resident) */
-			if(mftRecAttr->dwType == INDEX_ALLOCATION) {
+			else if(mftRecAttr->dwType == INDEX_ALLOCATION) {
 
 			}
 
-		attrOffset += mftRecAttr->dwFullLength; /*Increment the offset by the length of this attribute */
-	} while(attrOffset+8 < mftFileH->dwRecLength); /*While there are attributes left to inspect */
+			else if(mftRecAttr->dwType == DATA) {
+				if(mftRecAttr->uchNonResFlag==false) { /*Is resident */
+					uint32_t attrDataSize = (mftRecAttr->Attr.Resident).dwLength;
+					size_t attrDataOffset = (mftRecAttr->Attr.Resident).wAttrOffset;
+					//uint16_t * residentData = malloc( attrDataSize );
+					char * residentData = malloc( attrDataSize );
+					/* Dump raw resident-attribute data for debugging purposes. */
+					memcpy(residentData, mftBuffer+attrOffset+attrDataOffset, attrDataSize);
+					int  k = 0;
+					//printf("\tSize of data: %lu Raw attribute data:\n", attrDataSize/sizeof(uint16_t));
+					//if(aFileName != NULL) printf("%s\n", aFileName);
+					//for(k = 0; k<attrDataSize/sizeof(uint16_t); k++) {
+					for(k = 0; k < attrDataSize; k++) {
+						//printf("%04x: ", residentData[k]);
+						//printf("%c", residentData[k]);
+					}
+					//printf("\n");
+					free(residentData);
+				} else { /*non-resident */
+					//printf("non-res data");
+				}
+			}
 
-		countRecords++;
-		//if(countRecords > 48) break; //Debug break out.
+			attrOffset += mftRecAttr->dwFullLength; /*Increment the offset by the length of this attribute */
+		} while(attrOffset+8 < mftFileH->dwRecLength); /*While there are attributes left to inspect */
+			//free(aFileName);
+			countRecords++;
+			//if(countRecords > 48) break; //Debug break out.
+		files = addFile(files, aFileName, 0, mftFileH->dwMFTRecNumber);
 	}
 	printf("\nfiles: %d\tdirectories: %d\n"
 			"deleted entities: %d\tOther entities: %d\n",
@@ -514,6 +550,9 @@ int main(int argc, char* argv[]) {
 			countDelEntity, countOther);
 	printf("Bad record attributes: %d\n", countBadAttr);
 	printf("File names: %d\n", countFileNames);
+
+	printf("\n");
+	printAllFiles(files);
 
 	free(mftFileH);
 	free(mftRecAttr);

@@ -72,6 +72,13 @@
 #pragma pack(pop)
 
 /**
+*	Returns the file permissions member for a given $STANDARD_INFORMATION attribute.
+*/
+uint32_t getFilePermissions(STD_INFORMATION *stdInfo) {
+	return stdInfo->filePermissions;
+}
+
+/**
  * 	Given an NTFS_ATTRIBUTE of type FILE_NAME (0x30)
  * 	and the mftBuffer record (1024 bytes)
  * 	and the offs into the record which the attribute is located at.
@@ -80,7 +87,7 @@
  *
  * 	WARNING: Memory is allocated for asciiFileName, need to free the returned pointer.
  */
-char * getFileName(NTFS_ATTRIBUTE * mftRecAttr, char * mftBuffer, uint16_t offs ) {
+char * getFileName(NTFS_ATTRIBUTE *mftRecAttr, char *mftBuffer, uint16_t offs ) {
 	char * asciiFileName;
 
 	if(!mftRecAttr->dwType == FILE_NAME) { /*Make sure this is a FILE_NAME attribute */
@@ -121,4 +128,3 @@ char * getFileName(NTFS_ATTRIBUTE * mftRecAttr, char * mftBuffer, uint16_t offs 
 	free(fileNameAttr);
 	return asciiFileName;
 }
-
