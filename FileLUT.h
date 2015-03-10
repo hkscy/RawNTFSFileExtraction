@@ -41,16 +41,12 @@ void printAllFiles(File *p_head) {
 
 	File *p_current_item = p_head;
 	while (p_current_item) {    // Loop while the current pointer is not NULL.
-		if (p_current_item->fileName && p_current_item->recordNumber) {
-			printf("%d: %s\n", p_current_item->recordNumber, p_current_item->fileName);
+		if (p_current_item->fileName != NULL) {
+			printf("%d | %" PRIu64 "| %s\n", p_current_item->recordNumber, p_current_item->offset ,p_current_item->fileName);
 		}
 		// Advance the current pointer to the next item in the list.
 		p_current_item = p_current_item->p_next;
 	}
 }
-
-
-
-
 
 #endif /* FILELUT_H_ */

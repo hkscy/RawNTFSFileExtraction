@@ -1,5 +1,7 @@
 typedef unsigned char BYTE; /*Define byte symbolic abbreviation */
 
+#define FRAG_PADDING 1008
+
 #pragma pack(push, 1) /*Pack structures to a one byte alignment */
 	typedef struct _PARTITION { 	/*NTFS partition table struct */
 		BYTE chBootInd; 			/*Boot indicator bit flag: 0 = no, 0x80 = bootable (or "active") */
@@ -44,6 +46,19 @@ typedef unsigned char BYTE; /*Define byte symbolic abbreviation */
 		char		chBootStrapCode[426];
 		uint16_t	wSecMark;				/*Always 0x55AA, marks end of boot sector */
 	} NTFS_BOOT_SECTOR, *P_NTFS_BOOT_SECTOR;
+
+	/*
+	 * This is not a standard NTFS structure
+	 * I have created it to take up the same space as an MFT record,
+	 * but carry information about the offset to the MFT record which the following
+	 * MFT records are located at.
+	 */
+	typedef struct _FRAG {
+		char 		fileSignature[4];
+		uint64_t	u64fragOffset;
+		BYTE 		unusedPadding[FRAG_PADDING];
+		uint32_t	dwEOF;
+	} FRAG;
 
 	/*http://www.cse.scu.edu/~tschwarz/coen252_07Fall/Lectures/NTFS.html */
 	typedef struct _NTFS_MFT_FILE_ENTRY_HEADER {
@@ -162,3 +177,25 @@ typedef unsigned char BYTE; /*Define byte symbolic abbreviation */
 	} NTATTR_INDEX_RECORD_ENTRY;
 	/*Unicode file name string is found directly after the end of the index record entry structure */
 #pragma pack(pop)
+
+/**
+ *	Create a Fragment record which contains the offset from which the MFT records
+ *	which follow were copied. This is necessary to determine the absolute offset
+ *	to resident attributes (i.e. files < ~900B
+ *
+ *	WARNING: Memory is allocated but not free()'d.
+ */
+FRAG *createFragRecord(uint64_t fragOffset) {
+	FRAG *fragRec = malloc( sizeof(FRAG) );
+	if(fragRec != NULL) {
+		fragRec->fileSignature[0] = 'F';
+		fragRec->fileSignature[1] = 'R';
+		fragRec->fileSignature[2] = 'A';
+		fragRec->fileSignature[3] = 'G';
+		fragRec->u64fragOffset = fragOffset;
+		char unused[FRAG_PADDING] = { 0x00 };
+		memset(fragRec->unusedPadding, *unused, sizeof(unused));
+		fragRec->dwEOF = 0xFFFFFFFF;
+	}
+	return fragRec;
+}
