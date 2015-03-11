@@ -641,7 +641,7 @@ int main(int argc, char* argv[]) {
 	/*------------------------------ User interface to the program ------------------------------*/
 	char cmd[CMD_BUFF];
 	int8_t pRet = -1;
-	int8_t sRet = -1;
+	char *searchTerm;
 	do {
 		printf("What do you want to do? \n");
 		fgets(cmd, CMD_BUFF-1, stdin);
@@ -652,18 +652,20 @@ int main(int argc, char* argv[]) {
 			case PRINT_FILES :
 				printAllFiles(files);
 				break;
-			case SRCH_FOR :
-				while((sRet = searchForMenu()) != EXIT) {
-					char *srchTerm = getSearchTerm();
-					if(SRCH_NUM == sRet) {
-						searchFiles(files, SRCH_NUM, srchTerm);
-					} else if (SRCH_OFFS == sRet) {
-						searchFiles(files, SRCH_OFFS, srchTerm);
-					} else if (SRCH_NAME == sRet) {
-						searchFiles(files, SRCH_NAME, srchTerm);
-					}
-					free(srchTerm);
-				}
+			case SRCH_FOR_MFTN : ;
+				searchTerm = getSearchTerm();
+				searchFiles(files, SRCH_NUM, searchTerm);
+				free(searchTerm);
+				break;
+			case SRCH_FOR_MFTC : ;
+				searchTerm = getSearchTerm();
+				searchFiles(files, SRCH_NAME, searchTerm);
+				free(searchTerm);
+				break;
+			case SRCH_FOR_MFTO : ;
+				searchTerm = getSearchTerm();
+				searchFiles(files, SRCH_OFFS, searchTerm);
+				free(searchTerm);
 				break;
 			case UNKNOWN :
 				printf("Command not recognised, try \'help\'\n");

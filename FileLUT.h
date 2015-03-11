@@ -77,21 +77,23 @@ uint32_t printAllFiles(File *p_head) {
  */
 int8_t searchFiles(File *p_head, uint8_t srchType, char * searchTerm) {
 	int intSTerm = atoi(searchTerm);
+	uint64_t u64SearchTerm = strtoull(searchTerm, NULL, 0);
 	uint32_t countHits = 0;
 	File *p_current_item = p_head;
 	while (p_current_item) {    // Loop while the current pointer is not NULL.
 		if (p_current_item->fileName != NULL) {
+
 			if(SRCH_NUM == srchType) { /*Search for the record number given in searchTerm */
-				if(p_current_item->recordNumber == intSTerm) {
+				if( p_current_item->recordNumber == u64SearchTerm ) {
 					printFile(p_current_item);
 					countHits++;
 				}
 			} else if (SRCH_OFFS == srchType) { /*Search for records using disk offset to content */
-				if(p_current_item->recordNumber == intSTerm) {
+				if( p_current_item->offset == u64SearchTerm ) {
 					printFile(p_current_item);
 					countHits++;
 				}
-			} else if (SRCH_NAME == srchType) {
+			} else if (SRCH_NAME == srchType) { /*Search for records using file name */
 				if( strcmp(searchTerm, p_current_item->fileName) == 0 ) {
 					printFile(p_current_item);
 					countHits++;
