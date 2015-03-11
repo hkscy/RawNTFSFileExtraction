@@ -368,9 +368,9 @@ int main(int argc, char* argv[]) {
 								int errsv = errno;
 								printf("Failed to open read MFT from disk with error: %s.\n", strerror(errsv));
 							} else {
+								/*Create special fragment header and write to file before records in fragment */
+								/*Need to add in the record number of the first record in the fragment */
 								FRAG *frag = createFragRecord(blk_offset);
-
-								/*Write special fragment header to local file */
 								if( fwrite( frag, sizeof(FRAG), 1, MFT_file_copy ) != 1) {
 									int errsv = errno;
 									printf("Write MFT to local file with error: %s.\n", strerror(errsv));
@@ -476,20 +476,12 @@ int main(int argc, char* argv[]) {
 		/*Each subsequent file record should  start with signature 'FILE0', check this. */
 		else if(strcmp(mftFileH->fileSignature, "FILE0") == 0) {
 
-			char * aFileName = NULL;
-
-			/*Check file flags on record, determine record type */
-			uint16_t mftFlags = mftFileH->wFlags;
-			if(mftFlags==IN_USE) {
-				countFiles++;
-			} else if (mftFlags==!IN_USE) {
-				countDelEntity++;
-			} else if (mftFlags==IN_USE||DIRECTORY) {
-				countDir++;
-			} else {
-				countOther++;
-				if(DEBUG)printf("%u\t", mftFlags);
-			}
+			char * aFileName = NULL;	/*Set for files which have this attribute */
+			bool hasDataAttr = false;	/*Set for files which have $DATA */
+				BYTE uchNonResFlag;			/*If hasDataAttr then set */
+				size_t resDataOffset = 0;		/*Offset to non-resident data attribute in record */
+				uint32_t resDataSize = 0;
+				DataRun *runList = NULL; 	/*Allocate for non-resident $DATA runlist */
 
 			/*---------------------------- Get MFT Record attributes ---------------------------*/
 			uint16_t attrOffset = mftFileH->wAttribOffset; 	 	    /*Offset to first attribute */
@@ -539,35 +531,96 @@ int main(int argc, char* argv[]) {
 				}
 
 				else if(mftRecAttr->dwType == DATA) {
-					if(mftRecAttr->uchNonResFlag==false) { /*Is resident */
-						uint32_t attrDataSize = (mftRecAttr->Attr.Resident).dwLength;
-						size_t attrDataOffset = (mftRecAttr->Attr.Resident).wAttrOffset;
-						//uint16_t * residentData = malloc( attrDataSize );
-						char * residentData = malloc( attrDataSize );
-						/* Dump raw resident-attribute data for debugging purposes. */
-						memcpy(residentData, mftBuffer+attrOffset+attrDataOffset, attrDataSize);
-						int  k = 0;
-						//printf("\tSize of data: %lu Raw attribute data:\n", attrDataSize/sizeof(uint16_t));
-						//if(aFileName != NULL) printf("%s\n", aFileName);
-						//for(k = 0; k<attrDataSize/sizeof(uint16_t); k++) {
-						for(k = 0; k < attrDataSize; k++) {
-							//printf("%04x: ", residentData[k]);
-							//printf("%c", residentData[k]);
-						}
-						//printf("\n");
-						free(residentData);
-					} else { /*non-resident */
-						//printf("non-res data");
+					hasDataAttr = true;
+					uchNonResFlag = mftRecAttr->uchNonResFlag;
+					if(uchNonResFlag==false) { /*Is resident $DATA */
+						resDataSize = (mftRecAttr->Attr.Resident).dwLength;
+						resDataOffset = (mftRecAttr->Attr.Resident).wAttrOffset;
+
+					} else if(uchNonResFlag==true) { /*non-resident $DATA attribute */
+
+						uint8_t countRuns = 0;
+						OFFS_LEN_BITFIELD *offs_len_bitField = malloc( sizeof(OFFS_LEN_BITFIELD) );
+						uint16_t dataRunOffset = (mftRecAttr->Attr).NonResident.wDatarunOffset;
+
+						do {
+							uint64_t *length = malloc( sizeof(uint64_t) ); /*The length and offset data run fields are always 8 or less bytes */
+							int64_t *offset = malloc( sizeof(int64_t) ); /* Offset is signed */
+							/*Follow offset to data runs, read first data run. */
+							/*First read it's offset and length nibbles using the bitfield */
+							/*Top four bits represent a length, and the last four bits represent an offset. */
+							if(countRuns == 0) {
+								memcpy(offs_len_bitField, mftBuffer+attrOffset+dataRunOffset, sizeof(OFFS_LEN_BITFIELD));
+							}
+
+							*length = 0; *offset = 0;
+							dataRunOffset++; /*Move offset past offset_length_union */
+
+							/*Copy length field from run list */
+							memcpy(length, mftBuffer+attrOffset+dataRunOffset, offs_len_bitField->bitfield.lengthSize);
+							dataRunOffset+=offs_len_bitField->bitfield.lengthSize; /*Move offset past length field */
+							/*Copy offset field from run list */
+							memcpy(offset, mftBuffer+attrOffset+dataRunOffset, offs_len_bitField->bitfield.offsetSize);
+							dataRunOffset+=offs_len_bitField->bitfield.offsetSize; /*Move offset past offset field */
+
+							runList = addRun(runList, length, offset); /*Add extracted run to runlist */
+							countRuns++;
+
+							/*Copy next bitfield header, check if == 0 for loop termination */
+							memcpy(offs_len_bitField, mftBuffer+attrOffset+dataRunOffset, sizeof(OFFS_LEN_BITFIELD));
+						} while(offs_len_bitField->val != 0);
+						runList = reverseList(runList);	/*Put the data runs in disk order */
 					}
 				}
 
-				attrOffset += mftRecAttr->dwFullLength; /*Increment the offset by the length of this attribute */
+				attrOffset += mftRecAttr->dwFullLength;    /*Increment the offset by the length of this attribute */
 			} while(attrOffset+8 < mftFileH->dwRecLength); /*While there are attributes left to inspect */
-				//free(aFileName);
-				countRecords++;
-				//if(countRecords > 48) break; //Debug break out.
+														   /*Real size is padded to na 8-byte boundary */
+			//free(aFileName);
+			countRecords++;
+			//if(countRecords > 48) break; /*Debug break out */
 
-			files = addFile(files, aFileName, u64bytesAbsMFTOffset, mftFileH->dwMFTRecNumber);
+			/* At this point we have all of the attributes and need to do something with them */
+			/*Check file flags on record, determine record type */
+			uint16_t mftFlags = mftFileH->wFlags;
+			if(mftFlags==IN_USE) {	/*This is a file record */
+
+				if(hasDataAttr) {	/*And it has $DATA */
+					countFiles++;
+					uint64_t u64DataOffset = u64bytesAbsMFTOffset;
+
+					if(uchNonResFlag == false) {/*$DATA is resident */
+						u64DataOffset += (mftFileH->dwMFTRecNumber*MFT_RECORD_LENGTH) + resDataOffset;
+						files = addFile(files, aFileName,
+											   u64DataOffset,
+											   resDataSize,
+											   mftFileH->dwMFTRecNumber);
+
+					} else if (uchNonResFlag) {/*DATA is non-resident,  Iterate through the runlist and extract data*/
+						DataRun *p_current_item = runList;
+						while (p_current_item) {
+							if (p_current_item->offset && p_current_item->length) {
+								off_t nonResDataOffs =  dwBytesPerCluster*(*p_current_item->offset);
+								size_t NonResDataLen = dwBytesPerCluster*(*p_current_item->length);
+								files = addFile(files, aFileName,
+													   nonResDataOffs,
+													   NonResDataLen,
+													   mftFileH->dwMFTRecNumber);
+							}
+							p_current_item = p_current_item->p_next; /*Advance position in list */
+						}
+					}
+				}
+
+			} else if (mftFlags==!IN_USE) {
+				countDelEntity++;
+			} else if (mftFlags==(IN_USE|DIRECTORY)) { /*This is a directory */
+				countDir++;
+			} else {
+				countOther++;
+				if(DEBUG)printf("%u\t", mftFlags);
+			}
+
 
 		} else {
 			printf("MFT file corrupted.\n");
@@ -588,6 +641,7 @@ int main(int argc, char* argv[]) {
 	/*------------------------------ User interface to the program ------------------------------*/
 	char cmd[CMD_BUFF];
 	int8_t pRet = -1;
+	int8_t sRet = -1;
 	do {
 		printf("What do you want to do? \n");
 		fgets(cmd, CMD_BUFF-1, stdin);
@@ -597,6 +651,19 @@ int main(int argc, char* argv[]) {
 				break;
 			case PRINT_FILES :
 				printAllFiles(files);
+				break;
+			case SRCH_FOR :
+				while((sRet = searchForMenu()) != EXIT) {
+					char *srchTerm = getSearchTerm();
+					if(SRCH_NUM == sRet) {
+						searchFiles(files, SRCH_NUM, srchTerm);
+					} else if (SRCH_OFFS == sRet) {
+						searchFiles(files, SRCH_OFFS, srchTerm);
+					} else if (SRCH_NAME == sRet) {
+						searchFiles(files, SRCH_NAME, srchTerm);
+					}
+					free(srchTerm);
+				}
 				break;
 			case UNKNOWN :
 				printf("Command not recognised, try \'help\'\n");
