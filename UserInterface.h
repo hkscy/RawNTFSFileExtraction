@@ -31,6 +31,7 @@
 #define SRCH_FOR_MFTN	3
 #define SRCH_FOR_MFTC	4
 #define SRCH_FOR_MFTO	5
+#define EXT_MFTN		6
 #define EXIT			127
 #define UNKNOWN			-1
 
@@ -44,6 +45,7 @@
 #define SRCH_MFTN_CMD		"search using record number"
 #define SRCH_MFTC_CMD		"search using record name"
 #define SRCH_MFTO_CMD		"search using record offset"
+#define EXT_MFTN_CMD		"extract using record number"
 #define EXIT_CMD			"exit"
 
 
@@ -54,12 +56,14 @@
 \t" KWHT "%s" KRESET " - Search for a specific file, using it's MFT record number.\n\
 \t" KWHT "%s" KRESET " - Search for a specific file, using it's file name.\n\
 \t" KWHT "%s" KRESET " - Search for a specific file, using it's absolute offset in bytes.\n\
+\t" KWHT "%s" KRESET " - Extract a specific file, using it's MFT record number.\n\
 \t" KWHT "%s" KRESET " - Close this program.\n", \
 HELP_CMD, \
 PRINT_FILES_CMD, \
 SRCH_MFTN_CMD, \
 SRCH_MFTC_CMD, \
 SRCH_MFTO_CMD, \
+EXT_MFTN_CMD, \
 EXIT_CMD
 
 #define SEARCHTERM "Enter the search term: "
@@ -73,6 +77,7 @@ int8_t parseUserInput(char * userInput) {
 	else if ( ENTERED(SRCH_MFTN_CMD) )	 { return SRCH_FOR_MFTN; }
 	else if ( ENTERED(SRCH_MFTC_CMD) )	 { return SRCH_FOR_MFTC; }
 	else if ( ENTERED(SRCH_MFTO_CMD) )	 { return SRCH_FOR_MFTO; }
+	else if ( ENTERED(EXT_MFTN_CMD) )	 { return EXT_MFTN; }
 	else if ( ENTERED(EXIT_CMD) ) 		 { return EXIT;	}
 	else 								 { return UNKNOWN; }
 
@@ -85,7 +90,5 @@ char *getSearchTerm() {
 	userInput[ strcspn(userInput, "\r\n") ] = 0; /*Replaces LF with \0 */
 	return userInput;
 }
-
-//char * getSearchNum() {}
 
 #endif /* USERINTERFACE_H_ */

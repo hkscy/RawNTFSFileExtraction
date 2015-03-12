@@ -641,6 +641,7 @@ int main(int argc, char* argv[]) {
 	/*------------------------------ User interface to the program ------------------------------*/
 	char cmd[CMD_BUFF];
 	int8_t pRet = -1;
+	File *filesFound = NULL;
 	char *searchTerm;
 	do {
 		printf("What do you want to do? \n");
@@ -655,16 +656,25 @@ int main(int argc, char* argv[]) {
 			case SRCH_FOR_MFTN : ;
 				searchTerm = getSearchTerm();
 				searchFiles(files, SRCH_NUM, searchTerm);
+				//printf("%d records found.\n", nFilesFound);
+				//freeFilesList(filesFound);
 				free(searchTerm);
 				break;
 			case SRCH_FOR_MFTC : ;
 				searchTerm = getSearchTerm();
 				searchFiles(files, SRCH_NAME, searchTerm);
+				//printf("%d records found.\n", nFilesFound);
 				free(searchTerm);
 				break;
 			case SRCH_FOR_MFTO : ;
 				searchTerm = getSearchTerm();
 				searchFiles(files, SRCH_OFFS, searchTerm);
+				//printf("%d records found.\n", nFilesFound);
+				free(searchTerm);
+				break;
+			case EXT_MFTN: ;
+				searchTerm = getSearchTerm();
+				searchFiles(files, SRCH_NUM, searchTerm);
 				free(searchTerm);
 				break;
 			case UNKNOWN :

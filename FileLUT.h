@@ -38,6 +38,13 @@ File* addFile(File *p_head, char *fileName, uint64_t offset, uint32_t length, ui
 }
 
 /**
+ * Adds a copy of an existing file (source) to the head of the list at *dest
+ */
+File* addFileCopy(File *source, File *dest) {
+	return addFile(dest, source->fileName, source->offset, source->length, source->recordNumber);
+}
+
+/**
  * Prints the members of the file record to stdout.
  */
 void printFile(File *fileP) {
@@ -75,35 +82,56 @@ uint32_t printAllFiles(File *p_head) {
  *
  * Returns the number of hits.
  */
-int8_t searchFiles(File *p_head, uint8_t srchType, char * searchTerm) {
-	int intSTerm = atoi(searchTerm);
+File *searchFiles(File *p_head, uint8_t srchType, char * searchTerm) {
+
 	uint64_t u64SearchTerm = strtoull(searchTerm, NULL, 0);
 	uint32_t countHits = 0;
 	File *p_current_item = p_head;
+	File *foundFiles = NULL;
 	while (p_current_item) {    // Loop while the current pointer is not NULL.
 		if (p_current_item->fileName != NULL) {
 
 			if(SRCH_NUM == srchType) { /*Search for the record number given in searchTerm */
 				if( p_current_item->recordNumber == u64SearchTerm ) {
 					printFile(p_current_item);
-					countHits++;
+					foundFiles = addFileCopy(p_current_item, foundFiles);
 				}
 			} else if (SRCH_OFFS == srchType) { /*Search for records using disk offset to content */
 				if( p_current_item->offset == u64SearchTerm ) {
 					printFile(p_current_item);
-					countHits++;
+					foundFiles = addFileCopy(p_current_item, foundFiles);
 				}
 			} else if (SRCH_NAME == srchType) { /*Search for records using file name */
 				if( strcmp(searchTerm, p_current_item->fileName) == 0 ) {
 					printFile(p_current_item);
-					countHits++;
+					foundFiles = addFileCopy(p_current_item, foundFiles);
 				}
 			}
 		}
 		// Advance the current pointer to the next item in the list.
 		p_current_item = p_current_item->p_next;
 	}
-	return countHits;
+	return foundFiles;
+}
+
+/* Not working yet */
+int freeFilesList(File *p_head)	{
+
+	File *p_current_item = p_head;
+	int items_freed = 0;
+	while (p_current_item) {
+		File *p_next = p_current_item->p_next; /*Backup pointer to next list element.*/
+
+	    if (p_current_item->fileName) {		   /*Free fileName */
+	    	free(p_current_item->fileName);
+	    }
+
+	    free(p_current_item);		//	Free data run structure
+	    p_current_item = p_next;	// Move to the next item
+	    items_freed++;
+	}
+	//free(p_head); 					// Free the head data run structure.
+	return items_freed;
 }
 
 #endif /* FILELUT_H_ */
