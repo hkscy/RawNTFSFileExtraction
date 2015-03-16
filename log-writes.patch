@@ -1,168 +1,163 @@
-Index: qemu-kvm-0.12.3+noroms/vl
-===================================================================
---- qemu-kvm-0.12.3+noroms.orig/vl.c	2010-05-03 03:02:03.659384654 -0400
-+++ qemu-kvm-0.12.3+noroms/vl.c	2010-05-03 10:03:33.986260166 -0400
-@@ -307,6 +307,12 @@
-     { .driver = "vmware-svga",          .flag = &default_vga       },
- };
+diff -x '*.[oda18]' -x config.log -r qemu-2.1+dfsg/block/linux-aio.c qemu-2.1+dfsg-working/block/linux-aio.c
+17a18,21
+> #include <syslog.h>
+> #include <sys/socket.h>
+> extern int write_log_socket;
+> 
+79a84,94
+>             }
+>         }
+> 
+>         /* Write-log patch, if the local uds socket is valid, write the offset and number of bytes to the socket. */
+>         if (write_log_socket != -1 && ret == 0 && laiocb->iocb.aio_lio_opcode == IO_CMD_PWRITE) {
+>             int64_t d[2];
+>             d[0] = laiocb->iocb.u.c.offset;
+>             d[1] = laiocb->iocb.u.c.nbytes;
+>             if (send(write_log_socket, (void *)&d, sizeof(d), 0) < 0) {
+>                 syslog(LOG_DEBUG | LOG_USER, "write_log: Failed to log write in qemu_laio_process_completion: %m");
+>                 syslog(LOG_DEBUG | LOG_USER, "write_log_socket =: %d", write_log_socket);
 
-+#include <syslog.h>
-+#include <sys/socket.h>
-+#include <sys/un.h>
-+extern int write_log_socket;
-+struct sockaddr_un write_log_name = { AF_UNIX, "\x00" };
+diff -x '*.[oda18]' -x config.log -r qemu-2.1+dfsg/block/raw-posix.c qemu-2.1+dfsg-working/block/raw-posix.c
+33a34,38
+> /* Extra includes and global variable for write log modification */
+> #include <syslog.h>
+> #include <sys/socket.h>
+> extern int write_log_socket;
+> 
+diff -x '*.[oda18]' -x config.log -r qemu-2.1+dfsg/block.c qemu-2.1+dfsg-working/block.c
+52a53,58
+> /* Extra includes for write log ptch modification, write_log_socket without extern configured here */
+> #include <syslog.h>
+> #include <sys/socket.h>
+> #include <inttypes.h>
+> int write_log_socket = -1;
+> 
+2228c2234
+<     
+---
+> 
+2764a2771,2772
+>     /* Debug syslog to figure out which method to tap the write offset from */
+>     syslog(LOG_DEBUG | LOG_USER, "write_log: in bdrv_raw_co method. is_write = %s", is_write ? "true" : "false");
+2805a2814,2815
+>   -
+>   Method write log modified to write offset and length to UDS.
+2810c2820,2834
+<     return bdrv_rw_co(bs, sector_num, (uint8_t *)buf, nb_sectors, true, 0);
+---
+>     syslog(LOG_DEBUG | LOG_USER, "write_log: in bdrv_write method.");
+>     int ret;
+>     ret = bdrv_rw_co(bs, sector_num, (uint8_t *)buf, nb_sectors, true, 0);
+> 
+>      if (write_log_socket != 1 && ret >= 0) {
+>         int64_t d[2];
+>         d[0] = sector_num * 512;
+>         d[1] = nb_sectors * 512;
+>         syslog(LOG_DEBUG | LOG_USER, "write_log: write to sector number: %" PRIx64, sector_num);
+>         if (send(write_log_socket, (void *)&d, sizeof(d), 0) < 0) {
+>             syslog(LOG_DEBUG | LOG_USER, "write_log: Failed to log write in bdrv_write: %m");
+>         }
+>      }
+> 
+>     return ret;
+2904a2929,2930
+>     /* Debug syslog to figure out which method to tap the write offset from */
+>     syslog(LOG_DEBUG | LOG_USER, "write_log: in bdrv_pwrite method");
+2927a2954,2955
+>     /* Debug syslog to figure out which method to tap the write offset from */
+>     syslog(LOG_DEBUG | LOG_USER, "write_log: in bdrv_pwrite_sync method");
+4142a4171,4172
+>     /* Debug syslog to figure out which method to tap the write offset from */
+>     syslog(LOG_DEBUG | LOG_USER, "write_log: in bdrv_write_compressed method");
+4379a4410,4420
+>     /* Debug syslog to figure out which method to tap the write offset from */
+>     syslog(LOG_DEBUG | LOG_USER, "write_log: in bdrv_aio_writev method");
+> 
+>     if (write_log_socket != 1) {
+>         int64_t d[2];
+>         d[0] = sector_num * 512;
+>         d[1] = nb_sectors * 512;
+>         if (send(write_log_socket, (void *)&d, sizeof(d), 0) < 0) {
+>             syslog(LOG_DEBUG | LOG_USER, "write_log: Failed to log write in bdrv_write: %m");
+>         }
+>      }
+4627a4669
+> 
+4885a4928,4939
+>     /* Debug syslog to figure out which method to tap the write offset from */
+>     syslog(LOG_DEBUG | LOG_USER, "write_log: in coroutine_fn bdrv_co_writev_em method");
+> 
+>     if (write_log_socket != 1) {
+>         int64_t d[2];
+>         d[0] = sector_num * 512;
+>         d[1] = nb_sectors * 512;
+>         if (send(write_log_socket, (void *)&d, sizeof(d), 0) < 0) {
+>             syslog(LOG_DEBUG | LOG_USER, "write_log: Failed to log write in bdrv_write: %m");
+>         }
+>      }
 
- static int default_driver_check(QemuOpts *opts, void *opaque)
- {
-     const char *driver = qemu_opt_get(opts, "driver");
-@@ -5595,6 +5601,8 @@
-                             " Wrong format.\n");
-                     exit(1);
-                 }
-+
-+		snprintf(write_log_name.sun_path, sizeof(write_log_name.sun_path), "/var/run/fatwatch-%s", optarg);
-                 break;
- #ifndef _WIN32
- 	    case QEMU_OPTION_daemonize:
-@@ -5755,6 +5763,31 @@
-         }
-     }
-
-+    if (write_log_name.sun_path[0]) {
-+	int flags;
-+
-+	if ((write_log_socket = socket(AF_UNIX, SOCK_DGRAM, 0)) < 0) {
-+	    syslog(LOG_DEBUG | LOG_USER, "write_log: Failed to create socket: %m");
-+	}
-+
-+	if ((flags = fcntl(write_log_socket, F_GETFL, 0)) < 0) {
-+	    syslog(LOG_DEBUG | LOG_USER, "write_log: Failed to get socket flags: %m");
-+	} else {
-+	    if (fcntl(write_log_socket, F_SETFL, O_NONBLOCK | flags) < 0) {
-+		syslog(LOG_DEBUG | LOG_USER, "write_log: Failed to set socket flags: %m");
-+	    }
-+	}
-+
-+	write_log_name.sun_family = AF_UNIX;
-+	if (connect(write_log_socket, &write_log_name, sizeof(write_log_name)) < 0) {
-+	    syslog(LOG_DEBUG | LOG_USER, "write_log: Failed to connect: %m");
-+	    close(write_log_socket);
-+	    write_log_socket = -1;
-+	}
-+    } else {
-+	syslog(LOG_DEBUG | LOG_USER, "write_log: No UUID set");
-+    }
-+
-     /* If no data_dir is specified then try to find it relative to the
-        executable path.  */
-     if (!data_dir) {
-Index: qemu-kvm-0.12.3+noroms/linux-aio.c
-===================================================================
---- qemu-kvm-0.12.3+noroms.orig/linux-aio.c	2010-05-03 03:01:58.309384614 -0400
-+++ qemu-kvm-0.12.3+noroms/linux-aio.c	2010-05-03 10:04:23.236257637 -0400
-@@ -15,6 +15,10 @@
- #include <sys/eventfd.h>
- #include <libaio.h>
-
-+#include <syslog.h>
-+#include <sys/socket.h>
-+extern int write_log_socket;
-+
- /*
-  * Queue size (per-device).
-  *
-@@ -65,6 +69,17 @@
-         else if (ret >= 0)
-             ret = -EINVAL;
-
-+	if (write_log_socket != -1 &&
-+	    ret == 0 &&
-+	    laiocb->iocb.aio_lio_opcode == IO_CMD_PWRITE) {
-+	    int64_t d[2];
-+	    d[0] = laiocb->iocb.u.c.offset;
-+	    d[1] = laiocb->iocb.u.c.nbytes;
-+	    if (send(write_log_socket, (void *)&d, sizeof(d), 0) < 0) {
-+	      syslog(LOG_DEBUG | LOG_USER, "write_log: Failed to log write in qemu_laio_process_completion: %m");
-+	    }
-+	}
-+
-         laiocb->common.cb(laiocb->common.opaque, ret);
-     }
-
-Index: qemu-kvm-0.12.3+noroms/posix-aio-compat.c
-===================================================================
---- qemu-kvm-0.12.3+noroms.orig/posix-aio-compat.c	2010-05-03 03:01:58.336300448 -0400
-+++ qemu-kvm-0.12.3+noroms/posix-aio-compat.c	2010-05-03 10:04:36.116716224 -0400
-@@ -30,6 +30,10 @@
-
- #include "block/raw-posix-aio.h"
-
-+#include <syslog.h>
-+#include <sys/socket.h>
-+extern int write_log_socket;
-+
-
- struct qemu_paiocb {
-     BlockDriverAIOCB common;
-@@ -460,6 +464,18 @@
-                 acb->common.cb(acb->common.opaque, ret);
-                 qemu_aio_release(acb);
-                 result = 1;
-+
-+		if (write_log_socket != -1 &&
-+		    !ret &&
-+		    (acb->aio_type & QEMU_AIO_TYPE_MASK) == QEMU_AIO_WRITE) {
-+		  int64_t d[2];
-+		  d[0] = acb->aio_offset;
-+		  d[1] = acb->aio_nbytes;
-+		  if (send(write_log_socket, (void *)&d, sizeof(d), 0) < 0) {
-+		    syslog(LOG_DEBUG | LOG_USER, "write_log: Failed to log write in qemu_laio_process_completion: %m");
-+		  }
-+		}
-+
-                 break;
-             } else {
-                 pacb = &acb->next;
-Index: qemu-kvm-0.12.3+noroms/block.c
-===================================================================
---- qemu-kvm-0.12.3+noroms.orig/block.c	2010-05-03 09:52:21.769383871 -0400
-+++ qemu-kvm-0.12.3+noroms/block.c	2010-05-03 10:03:54.486266392 -0400
-@@ -42,6 +42,10 @@
- #include <windows.h>
- #endif
-
-+#include <syslog.h>
-+#include <sys/socket.h>
-+int write_log_socket = -1;
-+
- static BlockDriverAIOCB *bdrv_aio_readv_em(BlockDriverState *bs,
-         int64_t sector_num, QEMUIOVector *qiov, int nb_sectors,
-         BlockDriverCompletionFunc *cb, void *opaque);
-@@ -671,6 +675,7 @@
-                const uint8_t *buf, int nb_sectors)
- {
-     BlockDriver *drv = bs->drv;
-+    int ret;
-     if (!bs->drv)
-         return -ENOMEDIUM;
-     if (bs->read_only)
-@@ -682,7 +687,18 @@
-         set_dirty_bitmap(bs, sector_num, nb_sectors, 1);
-     }
-
--    return drv->bdrv_write(bs, sector_num, buf, nb_sectors);
-+    ret = drv->bdrv_write(bs, sector_num, buf, nb_sectors);
-+
-+    if (write_log_socket != 1 &&
-+	ret >= 0) {
-+      int64_t d[2];
-+      d[0] = sector_num * 512;
-+      d[1] = nb_sectors * 512;
-+      if (send(write_log_socket, (void *)&d, sizeof(d), 0) < 0)
-+	syslog(LOG_DEBUG | LOG_USER, "write_log: Failed to log write in bdrv_write: %m");
-+    }
-+
-+    return ret;
- }
-
- int bdrv_pread(BlockDriverState *bs, int64_t offset,
+diff -x '*.[oda18]' -x config.log -r qemu-2.1+dfsg/vl.c qemu-2.1+dfsg-working/vl.c
+126a127,134
+> /* Write patch extra includes and definitions for sending a datagram with the block device offset and the number of bytes
+> written concatenated together as machine-native 64-bit ints */
+> #include <syslog.h>
+> #include <sys/socket.h>
+> #include <sys/un.h>
+> extern int write_log_socket;
+> struct sockaddr_un write_log_name = { AF_UNIX, "\x00" };
+> 
+2908c2916
+< int main(int argc, char **argv, char **envp)
+---
+> int main(int argc, char *argv[], char **envp)
+2909a2918,2925
+>     /* Wite log patch: Some debug stuff to figure out where to place subsequent code.*/
+>     syslog(LOG_DEBUG | LOG_USER, "Log-writes patch. QEMU in it's main method.");
+>     /*syslog(LOG_DEBUG | LOG_USER, "Log-writes patch. QEMU nArgs: %d.", argc);
+>     int countArgv;
+>     for(countArgv = 0; countArgv < argc; countArgv++) {
+>         syslog( LOG_DEBUG | LOG_USER, "%s, ", argv[countArgv] );
+>     } */
+> 
+3057a3074
+> 
+3848a3866,3869
+>                 syslog(LOG_DEBUG | LOG_USER, "QEMU_OPTION_xen_domid = %d.", xen_domid);
+>                 // snprintf(write_log_name.sun_path, sizeof(write_log_name.sun_path), "/var/run/diskwatch-%s", optarg);
+>                 snprintf(write_log_name.sun_path, sizeof(write_log_name.sun_path), "/var/run/diskwatch");
+>                 syslog(LOG_DEBUG | LOG_USER, "QEMU Write patch log dom socket = %s.", write_log_name.sun_path);
+3855a3877
+>                 syslog(LOG_DEBUG | LOG_USER, "QEMU_OPTION_xen_create.");
+3968a3991,4016
+>     } // End of for(;;) option parsing loop.
+> 
+>     /* Write log patch: Create socket to local datagram UDS */
+>     if (write_log_name.sun_path[0]) { // Provided we have set the datasocket node.
+>         int flags;
+> 
+>         if ((write_log_socket = socket(AF_UNIX, SOCK_DGRAM, 0)) < 0) { // Get the socket.
+>             syslog(LOG_DEBUG | LOG_USER, "write_log: Failed to create socket: %m");
+>         }
+> 
+>         if ((flags = fcntl(write_log_socket, F_GETFL, 0)) < 0) { // Get the socket flags.
+>             syslog(LOG_DEBUG | LOG_USER, "write_log: Failed to get socket flags: %m");
+>         } else {
+>             if (fcntl(write_log_socket, F_SETFL, O_NONBLOCK | flags) < 0) { // Set the socket flags.
+>             syslog(LOG_DEBUG | LOG_USER, "write_log: Failed to set socket flags: %m");
+>             }
+>         }
+> 
+>         write_log_name.sun_family = AF_UNIX; // sun_family always = AF_UNIX for UNIX domain sockets.
+>         if (connect(write_log_socket, &write_log_name, sizeof(write_log_name)) < 0) { // Connect to the domain  socket.
+>             syslog(LOG_DEBUG | LOG_USER, "write_log: Failed to connect: %m");
+>             close(write_log_socket);
+>             write_log_socket = -1;
+>         }
+>     } else {
+>         syslog(LOG_DEBUG | LOG_USER, "write_log: UNIX Domain socket path set.");
+3970d4017
+<     loc_set_none();
+3971a4019
+>     loc_set_none();
+4339a4388
+>     syslog(LOG_DEBUG | LOG_USER, "QEMU opening virtual block devices.");

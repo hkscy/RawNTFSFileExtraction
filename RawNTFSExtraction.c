@@ -9,6 +9,7 @@
  */
 
 #include <stdio.h>
+#include <math.h>
 #include <stdlib.h>
 #include <sys/types.h> 	/*Various data types used elsewhere */
 #include <sys/stat.h>  	/*File information (stat et al) */
@@ -48,6 +49,7 @@ int getMFTAttribMembers(char * buff, NTFS_ATTRIBUTE* attrib);
 
 int lseekAbs(int fileDescriptor, off_t offset);
 int lseekRel(int fileDescriptor, off_t offset);
+int64_t roundToNearestCluster(int64_t sec_offs, int32_t secPerClus);
 
 uint16_t blkDevDescriptor = 0;		/*File descriptor for block device */
 off_t blk_offset = 0;
@@ -423,6 +425,7 @@ int main(int argc, char* argv[]) {
 	/*------------------- Process FILE records from extracted MFT  ------------------*/
 	printf("\nProcessing MFT...\n");
 	int countRecords = 0;
+	int32_t secPerClus = dwBytesPerCluster/SECTOR_SIZE;
 
 	/*Open file, r pointer at start */
 	if((MFT_file_copy = fopen("$MFT1", "r+")) == NULL) {
@@ -446,9 +449,11 @@ int main(int argc, char* argv[]) {
 	int countBadAttr = 0;
 	int countFileNames = 0;
 	int countFrags = 0;
+	int relRecN = 0; /*Relative record number, needed for calculating offset to record on disk */
 
 	File *files = NULL; /* Init the list of files to be constructed */
 	uint64_t u64bytesAbsMFTOffset = 0;
+	int64_t d64segAbsMFTOffset = 0;
 
 	while((readStatus = fread(mftBuffer, MFT_RECORD_LENGTH, 1, MFT_file_copy)) != 0) {
 		/*Read in one whole MFT record to mftBuffer, each time loop iterates */
@@ -467,10 +472,12 @@ int main(int argc, char* argv[]) {
 				printf("MFT Fragment record found\n");
 				FRAG *frag = malloc( sizeof(FRAG) );
 				memcpy(frag, mftBuffer, sizeof(FRAG));
-				printf("\tOffset for the records that follow: %" PRIu64 "\n", frag->u64fragOffset);
 				u64bytesAbsMFTOffset = frag->u64fragOffset;
+				d64segAbsMFTOffset = frag->u64fragOffset/SECTOR_SIZE;
+				printf("\tOffset for the records that follow: %" PRIu64 "\n", d64segAbsMFTOffset);
 				free(frag);
 				countFrags++;
+				relRecN = 0; /*Reset for each fragment's records */
 		}
 
 		/*Each subsequent file record should  start with signature 'FILE0', check this. */
@@ -587,28 +594,41 @@ int main(int argc, char* argv[]) {
 
 				if(hasDataAttr) {	/*And it has $DATA */
 					countFiles++;
-					uint64_t u64DataOffset = u64bytesAbsMFTOffset;
+					int64_t d64DataOffset = d64segAbsMFTOffset;
+					int64_t relSecN = relRecN*(MFT_RECORD_LENGTH/SECTOR_SIZE);
+					/* Need to round this value to the cluster which contains it */
 
 					if(uchNonResFlag == false) {/*$DATA is resident */
-						u64DataOffset += (mftFileH->dwMFTRecNumber*MFT_RECORD_LENGTH) + resDataOffset;
+						//u64DataOffset += (mftFileH->dwMFTRecNumber*MFT_RECORD_LENGTH) + resDataOffset;
+						/*The Data Offset is only useful if you wanted to extract the data,
+						 * In terms of locating the file which has been written to/read from
+						 * the MFT record offset is probably better
+						 * resDataOffset will stop things dividing by 512.0 byte segments - BAD.
+						 */
+
 						files = addFile(files, aFileName,
-											   u64DataOffset,
+											   d64DataOffset+relSecN, /*Sector offset, specifies the actual record */
+											   roundToNearestCluster(d64DataOffset+relSecN, secPerClus),
 											   resDataSize,
 											   mftFileH->dwMFTRecNumber);
 
 					} else if (uchNonResFlag) {/*DATA is non-resident,  Iterate through the runlist and extract data*/
+						uint32_t totalNonResSize = 0;
 						DataRun *p_current_item = runList;
 						while (p_current_item) {
 							if (p_current_item->offset && p_current_item->length) {
-								off_t nonResDataOffs =  dwBytesPerCluster*(*p_current_item->offset);
-								size_t NonResDataLen = dwBytesPerCluster*(*p_current_item->length);
-								files = addFile(files, aFileName,
-													   nonResDataOffs,
-													   NonResDataLen,
-													   mftFileH->dwMFTRecNumber);
+								//off_t nonResDataOffs =  dwBytesPerCluster*(*p_current_item->offset);
+								size_t nonResDataLen = dwBytesPerCluster*(*p_current_item->length);
+								totalNonResSize += nonResDataLen;
 							}
 							p_current_item = p_current_item->p_next; /*Advance position in list */
 						}
+						files = addFile(files, aFileName,	/*Add file record for the MFT record */
+											   //nonResDataOffs,
+											   d64DataOffset+relSecN,
+											   roundToNearestCluster(d64DataOffset+relSecN, secPerClus),
+											   totalNonResSize,
+											   mftFileH->dwMFTRecNumber);
 					}
 				}
 
@@ -620,7 +640,7 @@ int main(int argc, char* argv[]) {
 				countOther++;
 				if(DEBUG)printf("%u\t", mftFlags);
 			}
-
+			relRecN++; /* Increment for each FILE record */
 
 		} else {
 			printf("MFT file corrupted.\n");
@@ -641,7 +661,6 @@ int main(int argc, char* argv[]) {
 	/*------------------------------ User interface to the program ------------------------------*/
 	char cmd[CMD_BUFF];
 	int8_t pRet = -1;
-	File *filesFound = NULL;
 	char *searchTerm;
 	do {
 		printf("What do you want to do? \n");
@@ -654,23 +673,22 @@ int main(int argc, char* argv[]) {
 				printAllFiles(files);
 				break;
 			case SRCH_FOR_MFTN : ;
-				searchTerm = getSearchTerm();
-				searchFiles(files, SRCH_NUM, searchTerm);
-				//printf("%d records found.\n", nFilesFound);
-				//freeFilesList(filesFound);
-				free(searchTerm);
+				while( strcmp((searchTerm = getSearchTerm()), EXIT_CMD) != 0 ) {
+					searchFiles(files, SRCH_NUM, searchTerm);
+					free(searchTerm);
+				}
 				break;
 			case SRCH_FOR_MFTC : ;
-				searchTerm = getSearchTerm();
-				searchFiles(files, SRCH_NAME, searchTerm);
-				//printf("%d records found.\n", nFilesFound);
-				free(searchTerm);
+				while( strcmp((searchTerm = getSearchTerm()), EXIT_CMD) != 0 ) {
+					searchFiles(files, SRCH_NAME, searchTerm);
+					free(searchTerm);
+				}
 				break;
 			case SRCH_FOR_MFTO : ;
-				searchTerm = getSearchTerm();
-				searchFiles(files, SRCH_OFFS, searchTerm);
-				//printf("%d records found.\n", nFilesFound);
-				free(searchTerm);
+				while( strcmp((searchTerm = getSearchTerm()), EXIT_CMD) != 0 ) {
+					searchFiles(files, SRCH_OFFS, searchTerm);
+					free(searchTerm);
+				}
 				break;
 			case EXT_MFTN: ;
 				searchTerm = getSearchTerm();
@@ -688,12 +706,9 @@ int main(int argc, char* argv[]) {
 	free(mftRecAttrTmp);
 	printf("%d FILE records processed.\n", countRecords);
 
-
 	if(MFT_file_copy != NULL) {
 		fclose(MFT_file_copy);
 	}
-
-	// Need to build a LUT of write offset versus file name, something like that.
 
 	/*---------------------------------- Tidy up ----------------------------------*/
 	for(i = 0; i < P_PARTITIONS; i++) {
@@ -891,4 +906,18 @@ int lseekRel(int fileDescriptor, off_t offset) {
 		return EXIT_FAILURE;
 	}
 	return EXIT_SUCCESS;
+}
+/**
+ * Given the offset in sectors to an MFT record,
+ * Returns the cluster which that sector is contained within.
+ *
+ * Created because experimentally file writes were seen targeting
+ * whole clusters rather than individual sectors on Windows7.
+ */
+int64_t roundToNearestCluster(int64_t sec_offs, int32_t secPerClus) {
+	if(sec_offs%secPerClus == 0) {
+		return sec_offs;
+	} else {
+		return (sec_offs/secPerClus)*secPerClus; /*round down to nearest cluster */
+	}
 }

@@ -31,7 +31,7 @@
 #define SRCH_FOR_MFTN	3
 #define SRCH_FOR_MFTC	4
 #define SRCH_FOR_MFTO	5
-#define EXT_MFTN		6
+#define EXT_MFTN		7
 #define EXIT			127
 #define UNKNOWN			-1
 
@@ -55,7 +55,7 @@
 \t" KWHT "%s" KRESET " - Print out a list of all file names found on volume.\n\
 \t" KWHT "%s" KRESET " - Search for a specific file, using it's MFT record number.\n\
 \t" KWHT "%s" KRESET " - Search for a specific file, using it's file name.\n\
-\t" KWHT "%s" KRESET " - Search for a specific file, using it's absolute offset in bytes.\n\
+\t" KWHT "%s" KRESET " - Search for a specific file, using it's sector number offset.\n\
 \t" KWHT "%s" KRESET " - Extract a specific file, using it's MFT record number.\n\
 \t" KWHT "%s" KRESET " - Close this program.\n", \
 HELP_CMD, \
@@ -68,6 +68,9 @@ EXIT_CMD
 
 #define SEARCHTERM "Enter the search term: "
 
+/**
+ * Takes the user input and determines the appropriate action.
+ */
 int8_t parseUserInput(char * userInput) {
 
 	userInput[ strcspn(userInput, "\r\n") ] = 0; /*Replaces LF with \0 */
@@ -83,6 +86,11 @@ int8_t parseUserInput(char * userInput) {
 
 }
 
+/**
+ * Gets the search input string from user
+ *
+ * WARNING: memory is allocated.
+ */
 char *getSearchTerm() {
 	printf(SEARCHTERM);
 	char *userInput = malloc( sizeof(CMD_BUFF) );
