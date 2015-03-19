@@ -32,12 +32,15 @@
 #define SRCH_FOR_MFTC	4
 #define SRCH_FOR_MFTO	5
 #define EXT_MFTN		7
+#define EXT_MFTCO		8
 #define EXIT			127
 #define UNKNOWN			-1
 
+/* search types */
 #define SRCH_NUM		1
 #define SRCH_OFFS		2
-#define SRCH_NAME		3
+#define SRCH_CROFFS		3
+#define SRCH_NAME		4
 
 /* User commands */
 #define HELP_CMD			"help"
@@ -46,6 +49,7 @@
 #define SRCH_MFTC_CMD		"search using record name"
 #define SRCH_MFTO_CMD		"search using record offset"
 #define EXT_MFTN_CMD		"extract using record number"
+#define EXT_MFTCO_CMD		"extract using qemu offset"
 #define EXIT_CMD			"exit"
 
 
@@ -53,10 +57,11 @@
 "From here you can issue the following commands:\n\
 \t" KWHT "%s" KRESET " - Display this menu.\n\
 \t" KWHT "%s" KRESET " - Print out a list of all file names found on volume.\n\
-\t" KWHT "%s" KRESET " - Search for a specific file, using it's MFT record number.\n\
-\t" KWHT "%s" KRESET " - Search for a specific file, using it's file name.\n\
-\t" KWHT "%s" KRESET " - Search for a specific file, using it's sector number offset.\n\
-\t" KWHT "%s" KRESET " - Extract a specific file, using it's MFT record number.\n\
+\t" KWHT "%s" KRESET " - Search (offline) for a file using it's MFT record number.\n\
+\t" KWHT "%s" KRESET " - Search (offline) for a file using it's file name.\n\
+\t" KWHT "%s" KRESET " - Search (offline) for a file using it's sector number offset.\n\
+\t" KWHT "%s" KRESET " - Extract a file using it's (offline) MFT record number.\n\
+\t" KWHT "%s" KRESET " - Extract a file, using it's QEMU write offset.\n\
 \t" KWHT "%s" KRESET " - Close this program.\n", \
 HELP_CMD, \
 PRINT_FILES_CMD, \
@@ -64,6 +69,7 @@ SRCH_MFTN_CMD, \
 SRCH_MFTC_CMD, \
 SRCH_MFTO_CMD, \
 EXT_MFTN_CMD, \
+EXT_MFTCO_CMD, \
 EXIT_CMD
 
 #define SEARCHTERM "Enter the search term: "
@@ -81,6 +87,7 @@ int8_t parseUserInput(char * userInput) {
 	else if ( ENTERED(SRCH_MFTC_CMD) )	 { return SRCH_FOR_MFTC; }
 	else if ( ENTERED(SRCH_MFTO_CMD) )	 { return SRCH_FOR_MFTO; }
 	else if ( ENTERED(EXT_MFTN_CMD) )	 { return EXT_MFTN; }
+	else if ( ENTERED(EXT_MFTCO_CMD) )	 { return EXT_MFTCO; }
 	else if ( ENTERED(EXIT_CMD) ) 		 { return EXIT;	}
 	else 								 { return UNKNOWN; }
 
