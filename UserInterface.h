@@ -23,7 +23,7 @@
 #define ENTERED(cmd) strcmp(cmd, userInput) == 0
 
 /*Buffer for user string input */
-#define	CMD_BUFF 128
+#define	CMD_BUFF 256
 
 /* parseUserInput Return codes */
 #define PRINT_HELP 		1
@@ -100,9 +100,9 @@ int8_t parseUserInput(char * userInput) {
  */
 char *getSearchTerm() {
 	printf(SEARCHTERM);
-	char *userInput = malloc( sizeof(CMD_BUFF) );
+	char *userInput = malloc( CMD_BUFF );
 	fgets(userInput, CMD_BUFF-1, stdin);
-	userInput[ strcspn(userInput, "\r\n") ] = 0; /*Replaces LF with \0 */
+	userInput[ (strcspn(userInput, "\r\n")) ] = 0; /*Replaces LF with \0 */
 	return userInput;
 }
 

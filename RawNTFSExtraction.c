@@ -248,6 +248,7 @@ int main(int argc, char* argv[]) {
 			}
 			/* Is attribute resident? */
 			if(DEBUG) printf("\t%s ", mftRecAttrib->uchNonResFlag==true?"Non-Resident.":"Resident.");
+
 			if(mftRecAttrib->uchNonResFlag==false) { /*Is resident */
 				uint32_t attribDataSize = (mftRecAttrib->Attr.Resident).dwLength;
 				if(DEBUG && VERBOSE) {
@@ -377,17 +378,16 @@ int main(int argc, char* argv[]) {
 								printf("Failed to open read MFT from disk with error: %s.\n", strerror(errsv));
 							} else {
 								/*Create special fragment header and write to file before records in fragment */
-								/*Need to add in the record number of the first record in the fragment */
 								FRAG *frag = createFragRecord(blk_offset);
 								if( fwrite( frag, sizeof(FRAG), 1, MFT_offline_copy ) != 1) {
 									int errsv = errno;
-									printf("Write MFT to local file with error: %s.\n", strerror(errsv));
+									printf("Failed to write MFT to local file with error: %s.\n", strerror(errsv));
 									return EXIT_FAILURE;
 								}
 								/*Copy the memory to the local file */
 								if( fwrite( dataRun, readLength, 1, MFT_offline_copy ) != 1) {
 									int errsv = errno;
-									printf("Write MFT to local file with error: %s.\n", strerror(errsv));
+									printf("Failed to write MFT to local file with error: %s.\n", strerror(errsv));
 									return EXIT_FAILURE;
 								}
 								sizeofMFT += readLength;
@@ -546,7 +546,7 @@ int main(int argc, char* argv[]) {
 				else if(mftRecAttr->dwType == DATA) {
 					hasDataAttr = true;
 					uchNonResFlag = mftRecAttr->uchNonResFlag;
-					if(uchNonResFlag==true) { /*non-resident $DATA attribute, $MFT always non-resident. */
+					if(uchNonResFlag==true) { /*non-resident $DATA attribute  */
 
 						uint8_t countRuns = 0;
 						OFFS_LEN_BITFIELD *offs_len_bitField = malloc( sizeof(OFFS_LEN_BITFIELD) );
@@ -579,6 +579,9 @@ int main(int argc, char* argv[]) {
 							memcpy(offs_len_bitField, mftBuffer+attrOffset+dataRunOffset, sizeof(OFFS_LEN_BITFIELD));
 						} while(offs_len_bitField->val != 0);
 						runList = reverseList(runList);	/*Put the data runs in disk order */
+
+					} else if(uchNonResFlag == false) { /* Non-resident file Data */
+						resDataSize = (mftRecAttr->Attr.Resident).dwLength;
 					}
 				}
 
@@ -668,31 +671,31 @@ int main(int argc, char* argv[]) {
 		printf("What do you want to do? \n");
 		fgets(cmd, CMD_BUFF-1, stdin);
 		switch(pRet = parseUserInput(cmd)) {
-			case PRINT_HELP :
+			case PRINT_HELP : ;
 				printf(HELP);
 				break;
-			case PRINT_FILES :
+			case PRINT_FILES : ;	/* Print list of files stored in offline MFT copy */
 				printAllFiles(offl_files);
 				break;
-			case SRCH_FOR_MFTN : ;
+			case SRCH_FOR_MFTN : ;	/* Search offline MFT records using record number */
 				while( strcmp((searchTerm = getSearchTerm()), EXIT_CMD) != 0 ) {
 					searchFiles(offl_files, SRCH_NUM, searchTerm);
 					free(searchTerm);
 				}
 				break;
-			case SRCH_FOR_MFTC : ;
+			case SRCH_FOR_MFTC : ;	/* Search offline MFT records using record file name */
 				while( strcmp((searchTerm = getSearchTerm()), EXIT_CMD) != 0 ) {
 					searchFiles(offl_files, SRCH_NAME, searchTerm);
 					free(searchTerm);
 				}
 				break;
-			case SRCH_FOR_MFTO : ;
+			case SRCH_FOR_MFTO : ;	/* Search offline MFT records using record sector offset */
 				while( strcmp((searchTerm = getSearchTerm()), EXIT_CMD) != 0 ) {
 					searchFiles(offl_files, SRCH_OFFS, searchTerm);
 					free(searchTerm);
 				}
 				break;
-			case EXT_MFTN: ;
+			case EXT_MFTN: ; /* Extract file using MFT record number( offline directory ) */
 				while( strcmp((searchTerm = getSearchTerm()), EXIT_CMD) != 0 ) {
 
 					File *found = searchFiles(offl_files, SRCH_NUM, searchTerm);
@@ -737,7 +740,7 @@ int main(int argc, char* argv[]) {
 								if(mftRecAttr->uchNonResFlag==false) { /*Is resident $DATA */
 									uint32_t attrDataSize = (mftRecAttr->Attr.Resident).dwLength;
 									size_t attbDataOffs = (mftRecAttr->Attr.Resident).wAttrOffset;
-									printf("\tData size: %d Bytes.\n", attrDataSize);
+									if(DEBUG) printf("\tData size: %d Bytes.\n", attrDataSize);
 
 									/* Extract the file to disk */
 									extractResFile(found->fileName, mftBuffer+attrOffset+attbDataOffs, attrDataSize);
@@ -760,7 +763,8 @@ int main(int argc, char* argv[]) {
 					free(searchTerm);
 				}
 				break;
-			case EXT_MFTCO: ;
+			case EXT_MFTCO: ; /* Extract file using QEMU write offset */
+
 				/*Sector offsets rounded to the nearest cluster may contain up to 4 MFT records */
 				/*Retrieve any records at the offset - do this online*/
 				while( strcmp((searchTerm = getSearchTerm()), EXIT_CMD) != 0 ) {
@@ -828,8 +832,13 @@ int main(int argc, char* argv[]) {
 
 									else if(mftRecAttr->dwType == DATA) {
 										printf("Has data\n");
-										if(mftRecAttr->uchNonResFlag==true) { /*non-resident $DATA attribute*/
+										if(mftRecAttr->uchNonResFlag==false) { /*$DATA is resident */
+											uint32_t attrDataSize = (mftRecAttr->Attr.Resident).dwLength;
+											size_t attrDataOffs = (mftRecAttr->Attr.Resident).wAttrOffset;
+											printf("\tData size: %d Bytes.\n", attrDataSize);
 
+											/* Extract the file to disk */
+											extractResFile(fName, mftBuffer+attrOffs+attrDataOffs, attrDataSize);
 										}
 									}
 
@@ -1104,14 +1113,14 @@ int extractResFile(char * fileName, void * dataAttr, uint32_t len) {
 	}
 
 	/*Write the file data */
-	if( fwrite( residentData, len, 1, fileExtracted ) != 1) {
+	if( fwrite( residentData, len, 1, fileExtracted ) != len) {
 		int errsv = errno;
-		printf("Write MFT to local file with error: %s.\n", strerror(errsv));
+		printf("Error extracting file: %s.\n", strerror(errsv));
 		return EXIT_FAILURE;
 	}
 
 	/*Close the file */
-	if(fileExtracted!=NULL) {
+	if(fileExtracted != NULL) {
 		fclose(fileExtracted);
 	}
 

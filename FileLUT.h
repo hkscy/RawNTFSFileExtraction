@@ -94,32 +94,38 @@ uint32_t printAllFiles(File *p_head) {
  */
 File *searchFiles(File *p_head, uint8_t srchType, char * searchTerm) {
 
-	int64_t d64SearchTerm = strtoull(searchTerm, NULL, 0);
-	File *p_current_item = p_head;
+	int64_t d64SearchTerm = strtoull(searchTerm, NULL, 10);
 	File *foundFiles = NULL;
-	while (p_current_item) {    // Loop while the current pointer is not NULL.
-		if (p_current_item->fileName != NULL) {
 
-			if(SRCH_NUM == srchType) { /*Search for the record number given in searchTerm */
-				if( p_current_item->recordNumber == d64SearchTerm ) {
-					printFile(p_current_item);
-					foundFiles = addFileCopy(p_current_item, foundFiles);
-				}
-			} else if (SRCH_OFFS == srchType) { /*Search for records using disk offset to content */
-				if( p_current_item->cl_offset == d64SearchTerm ) { /*use cluster offset not sector */
-					printFile(p_current_item);
-					foundFiles = addFileCopy(p_current_item, foundFiles);
-				}
-			} else if (SRCH_NAME == srchType) { /*Search for records using file name */
-				if( strcmp(searchTerm, p_current_item->fileName) == 0 ) {
-					printFile(p_current_item);
-					foundFiles = addFileCopy(p_current_item, foundFiles);
+	if(d64SearchTerm != 0) { /* Without this condition, strings > 24 characters are shortened, needs investigating */
+		File *p_current_item = p_head;
+		while (p_current_item) {    // Loop while the current pointer is not NULL.
+			if (p_current_item->fileName != NULL) {
+
+				if(SRCH_NUM == srchType) { /*Search for the record number given in searchTerm */
+					if( p_current_item->recordNumber == d64SearchTerm ) {
+						printFile(p_current_item);
+						foundFiles = addFileCopy(p_current_item, foundFiles);
+					}
+				} else if (SRCH_OFFS == srchType) { /*Search for records using disk offset to content */
+					if( p_current_item->cl_offset == d64SearchTerm ) { /*use cluster offset not sector */
+						printFile(p_current_item);
+						foundFiles = addFileCopy(p_current_item, foundFiles);
+					}
+				} else if (SRCH_NAME == srchType) { /*Search for records using file name */
+					if( strcmp(searchTerm, p_current_item->fileName) == 0 ) {
+						printFile(p_current_item);
+						foundFiles = addFileCopy(p_current_item, foundFiles);
+					}
 				}
 			}
+			// Advance the current pointer to the next item in the list.
+			p_current_item = p_current_item->p_next;
 		}
-		// Advance the current pointer to the next item in the list.
-		p_current_item = p_current_item->p_next;
+	} else {
+		printf("Please enter a valid search query.\n");
 	}
+
 	return foundFiles;
 }
 
