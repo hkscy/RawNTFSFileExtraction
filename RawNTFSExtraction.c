@@ -21,6 +21,7 @@
 #include <inttypes.h>  	/*for (u)int64_t format specifiers PRId64 and PRIu64 */
 #include <wchar.h>	   	/*for formatted output of wide characters. */
 #include <stdbool.h>	/*C99 boolean type */
+#include <pthread.h>	/*POSIX threads */
 
 #include "NTFSStruct.h"
 #include "NTFSAttributes.h"
@@ -29,14 +30,17 @@
 #include "Utility.h"
 #include "FileLUT.h"
 #include "UserInterface.h"
+#include "UDSServer.h"
 
 #define BUFFSIZE 1024			/*Generic data buffer size */
+#define FNAMEBUFF 256
 #define P_PARTITIONS 4			/*Number of primary partitions */
 #define SECTOR_SIZE 512			/*Size of one sector */
 #define P_OFFSET 0x1BE			/*Partition information begins at offset 0x1BE */
 #define NTFS_TYPE 0x07			/*NTFS partitions are represented by 0x07 in the partition table */
 #define MFT_RECORD_LENGTH 1024 	/*MFT entries are 1024 bytes long */
 #define MFT_FILE_ATTR_PAD 8
+#define EXTRACTEDFILESDIR "EXTRACTED_FILES/"
 
 #define IN_USE		0x01		/*MFT FILE0 record flags */
 #define DIRECTORY	0x02
@@ -86,26 +90,29 @@ int main(int argc, char* argv[]) {
 
 	/*--------------------- Read in primary partitions from MBR ---------------------*/
 	printf("Reading primary partition data: ");
-	PARTITION **priParts = malloc( P_PARTITIONS*sizeof(PARTITION) );
-	PARTITION **nTFSParts = malloc( P_PARTITIONS*sizeof(PARTITION) );
+	PARTITION *priParts;
+	PARTITION *nTFSParts[P_PARTITIONS];
 	int i, nNTFS = 0;
-	/*Iterate the primary partitions in MBR to look for NTFS partitions */
+	priParts = malloc( sizeof(PARTITION) );
+
+	/*Iterate the primary partitions in MBR to look for NTFS partitions, if found copy */
 	for(i = 0; i < P_PARTITIONS; i++) {
-		priParts[i] = malloc( sizeof(PARTITION) );
-		if((readStatus = read( blkDevDescriptor, priParts[i], sizeof(PARTITION))) == -1){
+		if((readStatus = read( blkDevDescriptor, priParts, sizeof(PARTITION))) == -1){
 			int errsv = errno;
 			printf("Failed to open partition table with error: %s.\n", strerror(errsv));
 		} else {
-			if(priParts[i]->chType == NTFS_TYPE) {	/*If this partition is an NTFS entity */
+			if(priParts->chType == NTFS_TYPE) {	/*If this partition is an NTFS entity */
 				nTFSParts[nNTFS] = malloc( sizeof(PARTITION) );
-				nTFSParts[nNTFS++] = priParts[i]; 	/*Increment the NTFS parts counter */
+				memcpy(nTFSParts[nNTFS++], priParts, sizeof(PARTITION)); /*Copy to NTFS Partition array */
 				if(DEBUG) {
-					getPartitionInfo(buff, priParts[i]);
+					getPartitionInfo(buff, priParts);
 					printf("\nPartition %d:\n%s\n",i, buff);
 				}
 			}
 		}
 	}
+	free(priParts);
+
 	if(nNTFS < 1) { /*Can't continue if there's no NTFS partitions */
 		printf("No NTFS partitions found, please check user privileges.\n");
 		printf("Can't continue\n");
@@ -553,8 +560,8 @@ int main(int argc, char* argv[]) {
 						uint16_t dataRunOffset = (mftRecAttr->Attr).NonResident.wDatarunOffset;
 
 						do {
-							uint64_t *length = malloc( sizeof(uint64_t) ); /*The length and offset data run fields are always 8 or less bytes */
-							int64_t *offset = malloc( sizeof(int64_t) ); /* Offset is signed */
+							uint64_t length = 0;  /*The length and offset data run fields are always 8 or less bytes */
+							int64_t offset = 0;   /* Offset is signed */
 							/*Follow offset to data runs, read first data run. */
 							/*First read it's offset and length nibbles using the bitfield */
 							/*Top four bits represent a length, and the last four bits represent an offset. */
@@ -562,17 +569,16 @@ int main(int argc, char* argv[]) {
 								memcpy(offs_len_bitField, mftBuffer+attrOffset+dataRunOffset, sizeof(OFFS_LEN_BITFIELD));
 							}
 
-							*length = 0; *offset = 0;
 							dataRunOffset++; /*Move offset past offset_length_union */
 
 							/*Copy length field from run list */
-							memcpy(length, mftBuffer+attrOffset+dataRunOffset, offs_len_bitField->bitfield.lengthSize);
+							memcpy(&length, mftBuffer+attrOffset+dataRunOffset, offs_len_bitField->bitfield.lengthSize);
 							dataRunOffset+=offs_len_bitField->bitfield.lengthSize; /*Move offset past length field */
 							/*Copy offset field from run list */
-							memcpy(offset, mftBuffer+attrOffset+dataRunOffset, offs_len_bitField->bitfield.offsetSize);
+							memcpy(&offset, mftBuffer+attrOffset+dataRunOffset, offs_len_bitField->bitfield.offsetSize);
 							dataRunOffset+=offs_len_bitField->bitfield.offsetSize; /*Move offset past offset field */
 
-							runList = addRun(runList, length, offset); /*Add extracted run to runlist */
+							runList = addRun(runList, &length, &offset); /*Add extracted run to runlist */
 							countRuns++;
 
 							/*Copy next bitfield header, check if == 0 for loop termination */
@@ -661,7 +667,14 @@ int main(int argc, char* argv[]) {
 			countDelEntity, countOther);
 	printf("Bad record attributes: %d\n", countBadAttr);
 	printf("File names: %d\n", countFileNames);
-	printf("%d FILE records processed and stored offline.\n\n", countRecords);
+	printf("%d FILE records processed and stored offline.\n", countRecords);
+
+	/*-------------------------------- Launch UDS Server Thread --------------------------------*/
+	pthread_t tid;
+	pthread_attr_t attr;
+	pthread_attr_init(&attr); /*Default thread attributes */
+	pthread_create(&tid, &attr, udsServerThreadFn, socket_path); /* Launch UDS thread */
+	printf("UDS server thread started.\n\n");
 
 	/*------------------------------ User interface to the program ------------------------------*/
 	char cmd[CMD_BUFF];
@@ -679,19 +692,34 @@ int main(int argc, char* argv[]) {
 				break;
 			case SRCH_FOR_MFTN : ;	/* Search offline MFT records using record number */
 				while( strcmp((searchTerm = getSearchTerm()), EXIT_CMD) != 0 ) {
-					searchFiles(offl_files, SRCH_NUM, searchTerm);
+					File * found = searchFiles(offl_files, SRCH_NUM, searchTerm);
+					if(found) {
+						freeFilesList(found);
+					} else {
+						printf("No files found for that query.\n");
+					}
 					free(searchTerm);
 				}
 				break;
 			case SRCH_FOR_MFTC : ;	/* Search offline MFT records using record file name */
 				while( strcmp((searchTerm = getSearchTerm()), EXIT_CMD) != 0 ) {
-					searchFiles(offl_files, SRCH_NAME, searchTerm);
+					File * found = searchFiles(offl_files, SRCH_NAME, searchTerm);
+					if(found) {
+						freeFilesList(found);
+					} else {
+						printf("No files found for that query.\n");
+					}
 					free(searchTerm);
 				}
 				break;
 			case SRCH_FOR_MFTO : ;	/* Search offline MFT records using record sector offset */
 				while( strcmp((searchTerm = getSearchTerm()), EXIT_CMD) != 0 ) {
-					searchFiles(offl_files, SRCH_OFFS, searchTerm);
+					File * found = searchFiles(offl_files, SRCH_OFFS, searchTerm);
+					if(found) {
+						freeFilesList(found);
+					} else {
+						printf("No files found for that query.\n");
+					}
 					free(searchTerm);
 				}
 				break;
@@ -699,16 +727,17 @@ int main(int argc, char* argv[]) {
 				while( strcmp((searchTerm = getSearchTerm()), EXIT_CMD) != 0 ) {
 
 					File *found = searchFiles(offl_files, SRCH_NUM, searchTerm);
+					if(!found) printf("No records match that query.\n");
 					while(found) {
 						int64_t sOffsBytes = found->sec_offset*SECTOR_SIZE;
 						off_t offs_restore = blk_offset; 			/*Backup current read position */
 						lseekAbs(blkDevDescriptor, sOffsBytes);		/*Move to file record sector offset */
 
-						/* Read the MFT entry */
+						/* Read the MFT entry from disk */
 						if((readStatus = read(blkDevDescriptor, mftBuffer, MFT_RECORD_LENGTH)) == -1) { /*Read the next record */
 							int errsv = errno;
 							printf("Failed to read MFT at offset: %" PRIu64 ", with error %s.\n",
-																	 u64bytesAbsoluteMFT, strerror(errsv));
+																	 sOffsBytes, strerror(errsv));
 							return EXIT_FAILURE;
 						}
 
@@ -724,7 +753,7 @@ int main(int argc, char* argv[]) {
 							/*----- Attribute size is unknown, so get header first which contains full size -----*/
 							memcpy(mftRecAttrTmp, mftBuffer+attrOffset, sizeof(NTFS_ATTRIBUTE));
 
-							/*- NOTE: Some attributes have impossible record lengths > 1024, this breaks things -*/
+							/*- NOTE: Some attributes(deleted files?) have impossible record lengths, this breaks things -*/
 							if(mftRecAttrTmp->dwFullLength > MFT_RECORD_LENGTH-attrOffset) {
 								printf("Bad record attribute:\n");
 								getMFTAttribMembers(buff,mftRecAttrTmp);
@@ -756,10 +785,10 @@ int main(int argc, char* argv[]) {
 						} while(attrOffset+MFT_FILE_ATTR_PAD < mftRecHeader->dwRecLength); /*While there are attributes left to inspect */
 
 						lseekAbs(blkDevDescriptor, offs_restore);		   /*Restore read position */
-						freeFilesList(found);
 						free(mftRecHeader);
 						found = found->p_next; /*If there is more than one file found, go through them */
 					}
+					freeFilesList(found);
 					free(searchTerm);
 				}
 				break;
@@ -819,7 +848,10 @@ int main(int argc, char* argv[]) {
 									memcpy(mftRecAttr, mftBuff+attrOffs, mftRecAttrTmp->dwFullLength);
 
 									if(mftRecAttr->dwType == STANDARD_INFORMATION) { /*Contains create/modify stamps */
-										STD_INFORMATION *stdInfo = malloc( sizeof(STANDARD_INFORMATION) );
+										STD_INFORMATION *stdInfo = malloc( sizeof(STD_INFORMATION) );
+										memcpy(stdInfo,					   /*STANDARD_INFORMATION is always resident */
+											   mftBuff+attrOffs+(mftRecAttr->Attr).Resident.wAttrOffset,
+											   sizeof(STD_INFORMATION) );
 										uint64_t altTime = stdInfo->fileAltTime;
 										printf("File alt time: %" PRIu64 "\n", altTime);
 										free(stdInfo);
@@ -838,7 +870,7 @@ int main(int argc, char* argv[]) {
 											printf("\tData size: %d Bytes.\n", attrDataSize);
 
 											/* Extract the file to disk */
-											extractResFile(fName, mftBuffer+attrOffs+attrDataOffs, attrDataSize);
+											extractResFile(fName, mftBuff+attrOffs+attrDataOffs, attrDataSize);
 										}
 									}
 
@@ -868,13 +900,9 @@ int main(int argc, char* argv[]) {
 	} while( pRet != EXIT );
 
 	/*--------------------------------------- Tidy up ---------------------------------------*/
-	for(i = 0; i < P_PARTITIONS; i++) {
-		free(priParts[i]);	/*Free the memory allocated for primary partition structs */
-	} free(priParts);
-
 	for(i=0; i < nNTFS; i++) {
-		free(nTFSParts[i]); /*Free the memory allocated for NTFS partition structs */
-	} free(nTFSParts);
+		free(nTFSParts[i]); /*Free the memory allocated for NTFS partition structures */
+	}
 
 	free(buff); 			/*Used for buffering various texts */
 	free(mftBuffer);		/*Used for buffering one MFT record, 1kb*/
@@ -891,6 +919,10 @@ int main(int argc, char* argv[]) {
 	if(MFT_offline_copy != NULL) {		/*Make sure the offline MFT copy is closed */
 		fclose(MFT_offline_copy);
 	}
+
+	pthread_cancel(tid);	/* This is improper, but will do for now */
+	pthread_join(tid,NULL); /* Wait for thread to exit */
+	printf("UDS Server thread finished.\n");
 
 	return EXIT_SUCCESS;
 } //end of main method.
@@ -1090,6 +1122,10 @@ int64_t roundToNearestCluster(int64_t sec_offs, int32_t secPerClus) {
  */
 int extractResFile(char * fileName, void * dataAttr, uint32_t len) {
 
+	char * extractedFileName = malloc( FNAMEBUFF );
+	strcpy(extractedFileName, EXTRACTEDFILESDIR);
+	strcat(extractedFileName, fileName);
+
 	/* Copy resident file data from disk to memory. */
 	char *residentData = malloc( len );
 	memcpy(residentData, dataAttr, len);
@@ -1106,17 +1142,18 @@ int extractResFile(char * fileName, void * dataAttr, uint32_t len) {
 
 	/*Create local file to which the NTFS file data is extracted */
 	FILE *fileExtracted;
-	if((fileExtracted = fopen(fileName, "w+")) == NULL) {
+	if((fileExtracted = fopen(extractedFileName, "w+")) == NULL) {
 		int errsv = errno;
 		printf("Failed to create local file for storing %s: %s.\n", fileName, strerror(errsv));
+		free(residentData);
+		free(extractedFileName);
 		return EXIT_FAILURE;
 	}
 
 	/*Write the file data */
-	if( fwrite( residentData, len, 1, fileExtracted ) != len) {
+	if( fwrite( residentData, len, 1, fileExtracted ) != 1) {
 		int errsv = errno;
 		printf("Error extracting file: %s.\n", strerror(errsv));
-		return EXIT_FAILURE;
 	}
 
 	/*Close the file */
@@ -1125,6 +1162,6 @@ int extractResFile(char * fileName, void * dataAttr, uint32_t len) {
 	}
 
 	free(residentData);
-
+	free(extractedFileName);
 	return EXIT_SUCCESS;
 }

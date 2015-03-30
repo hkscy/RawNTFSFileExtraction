@@ -11,12 +11,12 @@
 #define USERINTERFACE_H_
 
 /* Colour codes for enhancing readability*/
-#define KGRN  "\x1B[32m"
-#define KYEL  "\x1B[33m"
-#define KBLU  "\x1B[34m"
-#define KMAG  "\x1B[35m"
-#define KCYN  "\x1B[36m"
-#define KWHT  "\x1B[37m"
+#define KGRN   "\x1B[32m"
+#define KYEL   "\x1B[33m"
+#define KBLU   "\x1B[34m"
+#define KMAG   "\x1B[35m"
+#define KCYN   "\x1B[36m"
+#define KWHT   "\x1B[37m"
 #define KRESET "\033[0m"
 
 /* Clean up command checking */
