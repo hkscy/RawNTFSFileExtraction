@@ -141,7 +141,7 @@ int freeFilesList(File *p_head)	{
 	while (p_current_item) {
 		File *p_next = p_current_item->p_next; /*Backup pointer to next list element.*/
 
-	    if (p_current_item->fileName) {		   /*Free fileName */
+	    if (p_current_item->fileName != NULL) {		   /*Free fileName */
 	    	free(p_current_item->fileName);
 	    }
 

@@ -87,7 +87,7 @@ uint32_t getFilePermissions(STD_INFORMATION *stdInfo) {
  *
  * 	WARNING: Memory is allocated for asciiFileName, need to free the returned pointer.
  */
-char * getFileName(NTFS_ATTRIBUTE *mftRecAttr, char *mftBuffer, uint16_t offs ) {
+char *getFileName(NTFS_ATTRIBUTE *mftRecAttr, char *mftBuffer, uint16_t offs ) {
 	char * asciiFileName;
 
 	if(!mftRecAttr->dwType == FILE_NAME) { /*Make sure this is a FILE_NAME attribute */
@@ -111,7 +111,7 @@ char * getFileName(NTFS_ATTRIBUTE *mftRecAttr, char *mftBuffer, uint16_t offs ) 
 		}
 	}
 
-	if(false) {
+	if(DEBUG && VERBOSE) {
 		printf("FILE_NAME attribute:\n");
 		printf("\tFile name length: %u\t", fileNameAttr->bFileNameLength);
 		printf("\tNamespace: %u\t", fileNameAttr->bFilenameNamespace);

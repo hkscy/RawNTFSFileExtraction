@@ -57,9 +57,12 @@ int getMFTAttribMembers(char * buff, NTFS_ATTRIBUTE* attrib);
 int lseekAbs(int fileDescriptor, off_t offset);
 int lseekRel(int fileDescriptor, off_t offset);
 
-/*Utilities */
+/*Utility methods */
 int64_t roundToNearestCluster(int64_t sec_offs, int32_t secPerClus);
 int extractResFile(char * fileName, void * dataAttr, uint32_t len);
+
+/* Consumer thread worker function */
+void *consumerThreadFn(void *param);
 
 uint16_t blkDevDescriptor = 0;		/*File descriptor for block device */
 off_t blk_offset = 0;
@@ -190,6 +193,7 @@ int main(int argc, char* argv[]) {
 		}
 
 		NTFS_ATTRIBUTE *mftRecAttrib, *mftRecAttribTemp = malloc( sizeof(NTFS_ATTRIBUTE) );
+		//mftRecAttrib = malloc(MFT_RECORD_LENGTH);
 		uint16_t attribOffset = mftMetaMFT->wAttribOffset; /*Offset to attributes */
 
 		/*---------------------- Follow attribute(s) offset position(s) ---------------------*/
@@ -287,11 +291,10 @@ int main(int argc, char* argv[]) {
 					printf("\tData run offset in attribute header: %u out of %u\n", dataRunOffset, mftRecAttrib->dwFullLength);
 					printf("\tProcessing run list...\n");
 				}
-
-				DataRun *p_head = NULL; /*Allocate for runlist */
+				uint64_t *runLen = malloc( sizeof(uint64_t) ); /*The length and offset data run fields are always 8 or less bytes */
+				int64_t *runOffs = malloc( sizeof(int64_t) ); /* Offset is signed */
+				DataRun *runListP = NULL; /*Allocate for runlist */
 				do {
-					uint64_t *length = malloc( sizeof(uint64_t) ); /*The length and offset data run fields are always 8 or less bytes */
-					int64_t *offset = malloc( sizeof(int64_t) ); /* Offset is signed */
 					/*Follow offset to data runs, read first data run. */
 					/*First read it's offset and length nibbles using the bitfield */
 					/*Top four bits represent a length, and the last four bits represent an offset. */
@@ -303,32 +306,34 @@ int main(int argc, char* argv[]) {
 						printf("\tlength of offset field of datarun: %u\n", offs_len_bitField->bitfield.offsetSize);
 					}
 
-					*length = 0; /*Initialise to zero since values may be less than 8 bytes long */
-					*offset = 0;
+					*runLen = 0; /*Initialise to zero since values may be less than 8 bytes long */
+					*runOffs = 0;
 					dataRunOffset++; /*Move offset past offset_length_union */
 
 					/*Copy length field from run list */
-					memcpy(length, mftBuffer+attribOffset+dataRunOffset, offs_len_bitField->bitfield.lengthSize);
+					memcpy(runLen, mftBuffer+attribOffset+dataRunOffset, offs_len_bitField->bitfield.lengthSize);
 					dataRunOffset+=offs_len_bitField->bitfield.lengthSize; /*Move offset past length field */
 
 					/*Copy offset field from run list */
-					memcpy(offset, mftBuffer+attribOffset+dataRunOffset, offs_len_bitField->bitfield.offsetSize);
+					memcpy(runOffs, mftBuffer+attribOffset+dataRunOffset, offs_len_bitField->bitfield.offsetSize);
 					dataRunOffset+=offs_len_bitField->bitfield.offsetSize; /*Move offset past offset field */
 
-					p_head = addRun(p_head, length, offset);
+					runListP = addRun(runListP, *runLen, *runOffs);
 					if(DEBUG && VERBOSE) {
-						printf("\tLength of datarun: %" PRIu64 " clusters\t", *length);
-						printf("\tVCN offset to datarun: %" PRId64 " clusters\n", *offset);
+						printf("\tLength of datarun: %" PRIu64 " clusters\t", *runLen);
+						printf("\tVCN offset to datarun: %" PRId64 " clusters\n", *runOffs);
 					}
 					countRuns++;
 
 					/*Copy next bitfield header, check if == 0 for loop termination */
 					memcpy(offs_len_bitField, mftBuffer+attribOffset+dataRunOffset, sizeof(OFFS_LEN_BITFIELD));
 				} while(offs_len_bitField->val != 0);
+				free(runLen);
+				free(runOffs);
 
-				p_head = reverseList(p_head);
+				runListP = reverseList(runListP);
 				if(DEBUG) {
-					printRuns(buff, p_head);
+					printRuns(buff, runListP);
 					printf("%s", buff);
 					printf("\tFinished processing %u data runs from runlist\n", countRuns);
 				}
@@ -338,10 +343,10 @@ int main(int argc, char* argv[]) {
 				if(isMFTFile && (mftRecAttrib->dwType == DATA)) {
 					printf("\t$MFT meta file found.\n");
 					uint8_t fileNameLen = snprintf(NULL, 0, "%s%d", ascFileName , workingPartition) + 1; // \0 terminated
-					char * fileName = malloc( fileNameLen );
+					char * mFTfileName = malloc( fileNameLen );
 
-					snprintf(fileName, fileNameLen, "%s%d.data", ascFileName, workingPartition);
-					if((MFT_offline_copy = fopen(fileName, "w+")) == NULL) {/*Open/create file, r/w pointer at start */
+					snprintf(mFTfileName, fileNameLen, "%s%d.data", ascFileName, workingPartition);
+					if((MFT_offline_copy = fopen(mFTfileName, "w+")) == NULL) {/*Open/create file, r/w pointer at start */
 						int errsv = errno;
 						printf("Failed to create local file for storing %s: %s.\n", ascFileName, strerror(errsv));
 						return EXIT_FAILURE;
@@ -349,8 +354,8 @@ int main(int argc, char* argv[]) {
 					if(countRuns > 1) {
 						printf("\t%s is fragmented on disk, located %u fragments.\n", ascFileName, countRuns);
 					}
-					printf("\tWriting DATA attribute to local %s file\n", fileName);
-					free(fileName);
+					printf("\tWriting DATA attribute to local %s file\n", mFTfileName);
+					free(mFTfileName);
 
 					off_t offset_restore = blk_offset; /*Backup the current read offset */
 
@@ -362,50 +367,47 @@ int main(int argc, char* argv[]) {
 					}
 
 					/*Iterate through the runlist and extract data*/
-					DataRun *p_current_item = p_head;
+					DataRun *p_current_item = runListP;
 					uint64_t sizeofMFT = 0;
 					while (p_current_item) {
-						if (p_current_item->offset && p_current_item->length) {
-							off_t nonResReadFrom =  dwBytesPerCluster*(*p_current_item->offset);
-							if(DEBUG) {
-								printf("\t%" PRIu64 "\t%" PRId64 "\n", *p_current_item->offset, *p_current_item->length);
-								printf("\tnonResReadFrom: %" PRId64 "\n", nonResReadFrom);
-							}
-
-							/* Move file pointer to the cluster */
-							lseekRel(blkDevDescriptor, nonResReadFrom);
-							if(DEBUG && VERBOSE) printf("\tblk_offset = %" PRId64 "\n", blk_offset);
-
-							size_t readLength = dwBytesPerCluster*(*p_current_item->length);
-							char * dataRun = malloc( readLength );
-
-							/*Read for length specified in dataRun */
-							if((readStatus = read(blkDevDescriptor, dataRun, readLength)) == -1 ){
-								int errsv = errno;
-								printf("Failed to open read MFT from disk with error: %s.\n", strerror(errsv));
-							} else {
-								/*Create special fragment header and write to file before records in fragment */
-								FRAG *frag = createFragRecord(blk_offset);
-								if( fwrite( frag, sizeof(FRAG), 1, MFT_offline_copy ) != 1) {
-									int errsv = errno;
-									printf("Failed to write MFT to local file with error: %s.\n", strerror(errsv));
-									return EXIT_FAILURE;
-								}
-								/*Copy the memory to the local file */
-								if( fwrite( dataRun, readLength, 1, MFT_offline_copy ) != 1) {
-									int errsv = errno;
-									printf("Failed to write MFT to local file with error: %s.\n", strerror(errsv));
-									return EXIT_FAILURE;
-								}
-								sizeofMFT += readLength;
-								free(frag);
-							}
-							free(dataRun);
-						} else {
-							if(DEBUG) printf("\tNo data.\n");
+						off_t nonResReadFrom =  dwBytesPerCluster*(p_current_item->offset);
+						if(DEBUG) {
+							printf("\t%" PRIu64 "\t%" PRId64 "\n", p_current_item->offset, p_current_item->length);
+							printf("\tnonResReadFrom: %" PRId64 "\n", nonResReadFrom);
 						}
+
+						/* Move file pointer to the cluster */
+						lseekRel(blkDevDescriptor, nonResReadFrom);
+						if(DEBUG && VERBOSE) printf("\tblk_offset = %" PRId64 "\n", blk_offset);
+
+						size_t readLength = dwBytesPerCluster*p_current_item->length;
+						char * dataRun = malloc( readLength );
+
+						/*Read for length specified in dataRun */
+						if((readStatus = read(blkDevDescriptor, dataRun, readLength)) == -1 ){
+							int errsv = errno;
+							printf("Failed to open read MFT from disk with error: %s.\n", strerror(errsv));
+						} else {
+							/*Create special fragment header and write to file before records in fragment */
+							FRAG *frag = createFragRecord(blk_offset);
+							if( fwrite( frag, sizeof(FRAG), 1, MFT_offline_copy ) != 1) {
+								int errsv = errno;
+								printf("Failed to write MFT to local file with error: %s.\n", strerror(errsv));
+								return EXIT_FAILURE;
+							}
+							/*Copy the memory to the local file */
+							if( fwrite( dataRun, readLength, 1, MFT_offline_copy ) != 1) {
+								int errsv = errno;
+								printf("Failed to write MFT to local file with error: %s.\n", strerror(errsv));
+								return EXIT_FAILURE;
+							}
+							sizeofMFT += readLength;
+							free(frag);
+						}
+						free(dataRun);
+
 						/*Rewind position (-1) by length of the data run */
-						lseekRel(blkDevDescriptor, (-1)*(*p_current_item->length)*dwBytesPerCluster);
+						lseekRel(blkDevDescriptor, (-1)*(p_current_item->length)*dwBytesPerCluster);
 						p_current_item = p_current_item->p_next; /*Advance position in list */
 					} // while (p_current_item)
 					printf("\tSize of MFT extracted from partition %u: %" PRId64 " bytes\n", workingPartition, sizeofMFT);
@@ -415,25 +417,25 @@ int main(int argc, char* argv[]) {
 
 				}// end of if(isMFTFile && (mftRecAttrib->dwType == DATA))
 
-				freeList(p_head);
+				freeRunList(runListP);
 				free(offs_len_bitField);
 				//free(p_head); Can't free this yet.
 			}
 			attribOffset += mftRecAttrib->dwFullLength; /*Increment the offset by the length of this attribute */
+			free(mftRecAttrib);
 		} while( attribOffset+MFT_FILE_ATTR_PAD < mftMetaMFT->dwRecLength ); /*While there are attributes left to inspect */
-		free(mftRecAttrib);
+
 		free(mftRecAttribTemp);
 		if(ascFileName != NULL) {
 			free(ascFileName);
 		}
 		free(nTFS_Boot);		/*Free Boot sector memory */
-
+		free(mftMetaMFT);		/*File record buffer */
+		/*Close local file copy of MFT if open */
+		if(MFT_offline_copy != NULL) {
+			fclose(MFT_offline_copy);
+		}
 	} //for(workingPartition = 0; workingPartition < nNTFS; workingPartition++) {
-
-	/*Close local file copy of MFT if open */
-	if(MFT_offline_copy!=NULL) {
-		fclose(MFT_offline_copy);
-	}
 
 	/*------------------- Process FILE records from extracted MFT  ------------------*/
 	printf("\nProcessing MFT...\n");
@@ -534,9 +536,12 @@ int main(int argc, char* argv[]) {
 				/*---------------------------- Get file name from record ---------------------------*/
 				/*------------------ Generally have more than one per actual file ------------------*/
 				else if(mftRecAttr->dwType == FILE_NAME) { 					/*If is FILE_NAME attribute */
-					aFileName = getFileName(mftRecAttr, mftBuffer, attrOffset);
-					//printf("%s\n", aFileName);
-					//free(aFileName);
+					if(aFileName) {	/*Trickery here is to prevent memory leaks and only keep one FileName */
+						free(aFileName);
+						aFileName = getFileName(mftRecAttr, mftBuffer, attrOffset);
+					} else {
+						aFileName = getFileName(mftRecAttr, mftBuffer, attrOffset);
+					}
 					countFileNames++;
 				}
 
@@ -558,7 +563,6 @@ int main(int argc, char* argv[]) {
 						uint8_t countRuns = 0;
 						OFFS_LEN_BITFIELD *offs_len_bitField = malloc( sizeof(OFFS_LEN_BITFIELD) );
 						uint16_t dataRunOffset = (mftRecAttr->Attr).NonResident.wDatarunOffset;
-
 						do {
 							uint64_t length = 0;  /*The length and offset data run fields are always 8 or less bytes */
 							int64_t offset = 0;   /* Offset is signed */
@@ -578,12 +582,13 @@ int main(int argc, char* argv[]) {
 							memcpy(&offset, mftBuffer+attrOffset+dataRunOffset, offs_len_bitField->bitfield.offsetSize);
 							dataRunOffset+=offs_len_bitField->bitfield.offsetSize; /*Move offset past offset field */
 
-							runList = addRun(runList, &length, &offset); /*Add extracted run to runlist */
+							runList = addRun(runList, length, offset); /*Add extracted run to runlist */
 							countRuns++;
 
 							/*Copy next bitfield header, check if == 0 for loop termination */
 							memcpy(offs_len_bitField, mftBuffer+attrOffset+dataRunOffset, sizeof(OFFS_LEN_BITFIELD));
 						} while(offs_len_bitField->val != 0);
+						free(offs_len_bitField);
 						runList = reverseList(runList);	/*Put the data runs in disk order */
 
 					} else if(uchNonResFlag == false) { /* Non-resident file Data */
@@ -628,17 +633,20 @@ int main(int argc, char* argv[]) {
 						while (p_current_item) {
 							if (p_current_item->offset && p_current_item->length) {
 								//off_t nonResDataOffs =  dwBytesPerCluster*(*p_current_item->offset);
-								size_t nonResDataLen = dwBytesPerCluster*(*p_current_item->length);
+								size_t nonResDataLen = dwBytesPerCluster*(p_current_item->length);
 								totalNonResSize += nonResDataLen;
 							}
 							p_current_item = p_current_item->p_next; /*Advance position in list */
 						}
-						offl_files = addFile(offl_files, aFileName,	/*Add file record for the MFT record */
-											   //nonResDataOffs,
-											   d64DataOffset+relSecN,
-											   roundToNearestCluster(d64DataOffset+relSecN, secPerClus),
-											   totalNonResSize,
-											   mftFileH->dwMFTRecNumber);
+						offl_files = addFile(offl_files, /*Add file record for the MFT record */
+											 aFileName,
+											 d64DataOffset+relSecN,
+											 roundToNearestCluster(d64DataOffset+relSecN, secPerClus),
+											 totalNonResSize,
+											 mftFileH->dwMFTRecNumber);
+					} else {
+						printf("Corrupted NonResFlag\n");
+						free(aFileName);
 					}
 				}
 
@@ -650,8 +658,9 @@ int main(int argc, char* argv[]) {
 				countOther++;
 				if(DEBUG)printf("%u\t", mftFlags);
 			}
+			freeRunList(runList);
+			if((!hasDataAttr) && (aFileName!=NULL)) free(aFileName);
 			relRecN++; /* Increment for each FILE record */
-
 		} else {
 			printf("MFT file corrupted.\n");
 			return EXIT_FAILURE;
@@ -670,11 +679,15 @@ int main(int argc, char* argv[]) {
 	printf("%d FILE records processed and stored offline.\n", countRecords);
 
 	/*-------------------------------- Launch UDS Server Thread --------------------------------*/
-	pthread_t tid;
+	pthread_t uds_tid;
 	pthread_attr_t attr;
 	pthread_attr_init(&attr); /*Default thread attributes */
-	pthread_create(&tid, &attr, udsServerThreadFn, socket_path); /* Launch UDS thread */
+	pthread_create(&uds_tid, &attr, udsServerThreadFn, socket_path); /* Launch UDS thread */
 	printf("UDS server thread started.\n\n");
+
+	/*--------------------------- Consumer loop thread for QEMU writes --------------------------*/
+	pthread_t consumer_tid;
+	int consumer_running = false;
 
 	/*------------------------------ User interface to the program ------------------------------*/
 	char cmd[CMD_BUFF];
@@ -893,6 +906,28 @@ int main(int argc, char* argv[]) {
 					free(searchTerm);
 				}
 				break;
+			case UDSSTART: ;
+				printf("starting...\n");
+				if(!consumer_running) {
+					pthread_create(&consumer_tid, &attr, consumerThreadFn, NULL); /* Launch UDS thread */
+					consumer_running = true;
+					printf("Server started.\n");
+				} else {
+					printf("Server already running.\n");
+				}
+				break;
+			case UDSSTOP: ;
+				printf("Stopping...\n");
+				if(consumer_running) {
+					pthread_cancel(consumer_tid);	/* This is improper(possibly), but will do for now */
+					pthread_join(consumer_tid, NULL); /* Wait for thread to exit */
+					consumer_running = false;
+					printf("Server stopped.\n");
+				} else {
+					printf("Server not running.\n");
+				}
+
+				break;
 			case UNKNOWN :
 				printf("Command not recognised, try \'help\'\n");
 				break;
@@ -910,19 +945,27 @@ int main(int argc, char* argv[]) {
 	free(mftRecAttr);
 	free(mftRecAttrTmp);
 
+	if(MFT_offline_copy != NULL) {		/*Make sure the offline MFT copy is closed */
+		fclose(MFT_offline_copy);
+	}
+	freeFilesList(offl_files);			/*Remove offline file directory from memory */
+
 	if((close(blkDevDescriptor)) == -1) { /*close block device and check if failed */
 		int errsv = errno;
 		printf("Failed to close block device %s with error: %s.\n", BLOCK_DEVICE, strerror(errsv));
 		return EXIT_FAILURE;
 	}
 
-	if(MFT_offline_copy != NULL) {		/*Make sure the offline MFT copy is closed */
-		fclose(MFT_offline_copy);
-	}
-
-	pthread_cancel(tid);	/* This is improper, but will do for now */
-	pthread_join(tid,NULL); /* Wait for thread to exit */
+	pthread_cancel(uds_tid);	/* This is improper(possibly), but will do for now */
+	pthread_join(uds_tid,NULL); /* Wait for thread to exit */
 	printf("UDS Server thread finished.\n");
+
+	if(consumer_running) {
+		pthread_cancel(consumer_tid);
+		pthread_join(uds_tid,NULL); /* Wait for thread to exit */
+		consumer_running = false;
+		printf("Extraction server finished.\n");
+	}
 
 	return EXIT_SUCCESS;
 } //end of main method.
@@ -1165,3 +1208,20 @@ int extractResFile(char * fileName, void * dataAttr, uint32_t len) {
 	free(extractedFileName);
 	return EXIT_SUCCESS;
 }
+
+/**
+ * Consumer loop worker thread.
+ */
+void *consumerThreadFn(void *param) {
+	while(true) {
+		char *newQueueItem = 0;
+		while(QGet(&newQueueItem) != -1) { /* While queue is not empty */
+			printf("From UDS: %s\n", newQueueItem);
+			free(newQueueItem);
+		}
+		if(DEBUG) printf("Queue is empty!\n");
+		sleep(10);	/* Wait a little while before trying again */
+	}
+	pthread_exit(0);
+}
+
