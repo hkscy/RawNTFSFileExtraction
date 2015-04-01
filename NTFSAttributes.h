@@ -88,7 +88,7 @@ uint32_t getFilePermissions(STD_INFORMATION *stdInfo) {
  * 	WARNING: Memory is allocated for asciiFileName, need to free the returned pointer.
  */
 char *getFileName(NTFS_ATTRIBUTE *mftRecAttr, char *mftBuffer, uint16_t offs ) {
-	char * asciiFileName;
+	char *asciiFileName;
 
 	if(!mftRecAttr->dwType == FILE_NAME) { /*Make sure this is a FILE_NAME attribute */
 		return NULL;

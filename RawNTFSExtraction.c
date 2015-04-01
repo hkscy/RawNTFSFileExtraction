@@ -621,11 +621,12 @@ int main(int argc, char* argv[]) {
 						 * resDataOffset will stop things dividing by 512.0 byte segments - BAD.
 						 */
 
-						offl_files = addFile(offl_files, aFileName,
-											   d64DataOffset+relSecN, /*Sector offset, specifies the actual record */
-											   roundToNearestCluster(d64DataOffset+relSecN, secPerClus),
-											   resDataSize,
-											   mftFileH->dwMFTRecNumber);
+						offl_files = addFile(offl_files,
+											 aFileName,
+											 d64DataOffset+relSecN, /*Sector offset, specifies the actual record */
+											 roundToNearestCluster(d64DataOffset+relSecN, secPerClus),
+											 resDataSize,
+											 mftFileH->dwMFTRecNumber);
 
 					} else if (uchNonResFlag) {/*DATA is non-resident,  Iterate through the runlist and extract data*/
 						uint32_t totalNonResSize = 0;
@@ -645,21 +646,39 @@ int main(int argc, char* argv[]) {
 											 totalNonResSize,
 											 mftFileH->dwMFTRecNumber);
 					} else {
-						printf("Corrupted NonResFlag\n");
-						free(aFileName);
+						if(DEBUG )printf("Corrupted NonResFlag\n");
+						if(aFileName) {
+							free(aFileName);
+							aFileName = NULL;
+						}
 					}
 				}
 
 			} else if (mftFlags==!IN_USE) {
+				if(aFileName) {
+					free(aFileName);
+					aFileName = NULL;
+				}
 				countDelEntity++;
 			} else if (mftFlags==(IN_USE|DIRECTORY)) { /*This is a directory */
+				if(aFileName) {
+					free(aFileName);
+					aFileName = NULL;
+				}
 				countDir++;
 			} else {
+				if(aFileName) {
+					free(aFileName);
+					aFileName = NULL;
+				}
 				countOther++;
 				if(DEBUG)printf("%u\t", mftFlags);
 			}
 			freeRunList(runList);
-			if((!hasDataAttr) && (aFileName!=NULL)) free(aFileName);
+			if((!hasDataAttr) && (aFileName!=NULL)) {
+				free(aFileName);
+				aFileName = NULL;
+			}
 			relRecN++; /* Increment for each FILE record */
 		} else {
 			printf("MFT file corrupted.\n");
@@ -1214,11 +1233,11 @@ int extractResFile(char * fileName, void * dataAttr, uint32_t len) {
  * Consumer loop worker thread.
  */
 void *consumerThreadFn(void *param) {
+	QEMU_OFFS_LEN newQItem;
 	while(true) {
-		char *newQueueItem = 0;
-		while(QGet(&newQueueItem) != -1) { /* While queue is not empty */
-			printf("From UDS: %s\n", newQueueItem);
-			free(newQueueItem);
+		while(QGet(&newQItem) != -1) { /* While queue is not empty */
+			printf("From UDS | Offset: %" PRId64 " Length: %d\n", newQItem.sectorN, newQItem.nSectors);
+			//free(newQItem);
 		}
 		if(DEBUG) printf("Queue is empty!\n");
 		sleep(10);	/* Wait a little while before trying again */

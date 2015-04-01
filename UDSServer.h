@@ -10,20 +10,26 @@
 #include <pthread.h>
 #include <signal.h>
 
-#define SOCKET_BUFF	256
+#define SOCKET_BUFF	64
 #define Q_ELEMENTS 1000
 #define Q_SIZE (Q_ELEMENTS + 1)
 #define QUEUE_FULL -1
 
-void *udsServerThreadFn( void *socket_path );
+typedef struct _qemu_offs_len {
+	int64_t sectorN;
+	int nSectors;
+} QEMU_OFFS_LEN;
 
 /* Producer-Consumer methods */
 void QInit(void);
-int  QPut(char *qItem);
-int  QGet(char **qItem);
+int  QPut(QEMU_OFFS_LEN qItem);
+int  QGet(QEMU_OFFS_LEN *qItem);
+
+/* Producer worker thread for UDS server */
+void *udsServerThreadFn( void *socket_path );
 
 /*FIFO buffer for QEMU writes */
-char *writeQueue[Q_SIZE];
+QEMU_OFFS_LEN writeQueue[Q_SIZE];
 int writeQueueIn = 0, writeQueueOut = 0;
 
 char *socket_path = "\0diskTap";
@@ -36,7 +42,8 @@ int udsFD;
 void *udsServerThreadFn(void *socket_path) {
 
 	struct sockaddr_un addr;
-	char buf[SOCKET_BUFF];
+	BYTE buffer[SOCKET_BUFF];
+	QEMU_OFFS_LEN buff;
 	int socketDescriptor, udsReadStatus;
 	QInit();
 
@@ -67,13 +74,14 @@ void *udsServerThreadFn(void *socket_path) {
 		}
 
 		/* Read the received data */
-		while ( (udsReadStatus=read(socketDescriptor, buf, sizeof(buf))) > 0 ) {
+		while ( (udsReadStatus=read(socketDescriptor, &buff, sizeof(QEMU_OFFS_LEN))) > 0 ) {
 			//printf("read %u bytes: %.*s\n", udsReadStatus, udsReadStatus, buf);
-			buf[(strcspn(buf, "\r\n"))] = 0; /*Replaces LF with \0 */
-			if(DEBUG) printf("read %u bytes: %s\n", udsReadStatus, buf);
-			char * recvd = malloc( sizeof(buf) );
-			strcpy(recvd, buf);
-			QPut(recvd); /*Put received data in the FIFO */
+			//buffer[(strcspn(buffer, "\r\n"))] = 0; /*Replaces LF with \0 */
+			if(DEBUG) printf("read %u bytes: %s\n", udsReadStatus, buffer);
+			//OFFS_LEN offsLen = malloc( sizeof );
+			//char * recvd = malloc( sizeof(buf) );
+			//strcpy(recvd, buffer);
+			QPut(buff); /*Put received data in the FIFO */
 		}
 
 		if (udsReadStatus == -1) { /*Error reading socket */
@@ -101,7 +109,7 @@ void QInit()
 /**
  * Put a new item in the queue
  */
-int QPut(char *qItem)
+int QPut(QEMU_OFFS_LEN qItem)
 {
 	if(writeQueueIn == (( writeQueueOut - 1 + Q_SIZE) % Q_SIZE)) {
 		return -1;	/* Queue Full*/
@@ -115,7 +123,7 @@ int QPut(char *qItem)
 /**
  * Remove the earliest item from the queue (FIFO)
  */
-int QGet(char **qItem)
+int QGet(QEMU_OFFS_LEN *qItem)
 {
     if(writeQueueIn == writeQueueOut) {
         return -1;	/* Queue Empty */
