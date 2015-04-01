@@ -919,6 +919,7 @@ int main(int argc, char* argv[]) {
 			case UDSSTOP: ;
 				printf("Stopping...\n");
 				if(consumer_running) {
+					/* Wait for the list to be empty first...*/
 					pthread_cancel(consumer_tid);	/* This is improper(possibly), but will do for now */
 					pthread_join(consumer_tid, NULL); /* Wait for thread to exit */
 					consumer_running = false;
