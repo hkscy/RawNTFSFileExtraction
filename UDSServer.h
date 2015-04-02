@@ -75,12 +75,7 @@ void *udsServerThreadFn(void *socket_path) {
 
 		/* Read the received data */
 		while ( (udsReadStatus=read(socketDescriptor, &buff, sizeof(QEMU_OFFS_LEN))) > 0 ) {
-			//printf("read %u bytes: %.*s\n", udsReadStatus, udsReadStatus, buf);
-			//buffer[(strcspn(buffer, "\r\n"))] = 0; /*Replaces LF with \0 */
 			if(DEBUG) printf("read %u bytes: %s\n", udsReadStatus, buffer);
-			//OFFS_LEN offsLen = malloc( sizeof );
-			//char * recvd = malloc( sizeof(buf) );
-			//strcpy(recvd, buffer);
 			QPut(buff); /*Put received data in the FIFO */
 		}
 

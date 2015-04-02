@@ -1,6 +1,11 @@
-typedef unsigned char BYTE; /*Define byte symbolic abbreviation */
+#ifndef NTFSSTRUCT_H_
+#define NTFSSTRUCT_H_
 
 #define FRAG_PADDING 1008
+#define BUFFSIZE 1024
+#define NTFS_TYPE 0x07			/*NTFS partitions are represented by 0x07 in the partition table */
+
+typedef unsigned char BYTE; /*Define byte abbreviation */
 
 #pragma pack(push, 1) /*Pack structures to a one byte alignment */
 	typedef struct _PARTITION { 	/*NTFS partition table struct */
@@ -178,6 +183,12 @@ typedef unsigned char BYTE; /*Define byte symbolic abbreviation */
 	/*Unicode file name string is found directly after the end of the index record entry structure */
 #pragma pack(pop)
 
+/* Verbose debug methods */
+int getPartitionInfo(char *buff, PARTITION *part);
+int getBootSectInfo(char* buff, NTFS_BOOT_SECTOR *bootSec);
+int getFILE0Attrib(char* buff, NTFS_MFT_FILE_ENTRY_HEADER *mftFileEntry);
+int getMFTAttribMembers(char * buff, NTFS_ATTRIBUTE* attrib);
+
 /**
  *	Create a Fragment record which contains the offset from which the MFT records
  *	which follow were copied. This is necessary to determine the absolute offset
@@ -199,3 +210,155 @@ FRAG *createFragRecord(uint64_t fragOffset) {
 	}
 	return fragRec;
 }
+
+/*
+ * Prints the members of an MFT FILE record attribute into buff.
+ */
+int getMFTAttribMembers(char * buff, NTFS_ATTRIBUTE* attrib) {
+	char* tempBuff = malloc(BUFFSIZE);
+	sprintf(tempBuff, "Attribute type: %d\n"// PRIu32 "\n"
+			"Length of attribute: %d\n"//%" PRIu32 "\n",
+			"Non-resident flag: %s\n"
+			"Length of name: %u\n"
+			"Offset to name: %u\n"
+			"Flags: %u\n"
+			"Attribute identifier: %u\n",
+			attrib->dwType,
+			attrib->dwFullLength,
+			attrib->uchNonResFlag == true ? "Non-Resident" : "Resident",
+					attrib->uchNameLength,
+					attrib->wNameOffset,
+					attrib->wFlags,
+					attrib->wID);
+	if(attrib->uchNonResFlag) { /*If attribute is Non-Resident*/
+		sprintf(buff, "%s", tempBuff);
+
+	} else{ /*Attribute is resident */
+		sprintf(buff, "%s"
+				"Length of attribute content: %d\n"
+				"Offset to attribute content: %u\n"
+				"Indexed: %u\n"
+				"Padding: %u\n",
+				tempBuff,
+				(attrib->Attr).Resident.dwLength,
+				(attrib->Attr).Resident.wAttrOffset,
+				(attrib->Attr).Resident.uchIndexedTag,
+				(attrib->Attr).Resident.uchPadding);
+	}
+	return 0;
+}
+
+/**
+ * Prints the members of a MFT File entry to buff.
+ */
+int getFILE0Attrib(char* buff, NTFS_MFT_FILE_ENTRY_HEADER *mftFileEntry) {
+	sprintf(buff, "File signature: %s\n"
+			"Offset to the update sequence: %u\n"
+			"Number of entries in fixup array: %u\n" /*Number times entry written */
+			"$LogFile Sequence Number (LSN): %" PRId64 "\n"
+			"Sequence number %u\n"
+			"Hard link count: %u\n"
+			"Offset to first attribute: %u\n"
+			"Flags: %u\n"
+			"Used size of MFT entry: %d\n"
+			"Allocated size of MFT entry: %d\n"
+			"File reference to the base FILE record: %" PRId64 "\n" /*Non zero if attributes not contained in MFT record */
+			"Next attribute ID: %u\n"
+			"wFixUpPattern: %u\n" /*Recognise partially written clusters */
+			"Number of this MFT record: %d\n",
+			mftFileEntry->fileSignature,
+			mftFileEntry->wFixupOffset,
+			mftFileEntry->wFixupSize,
+			mftFileEntry->n64LogSeqNumber,
+			mftFileEntry->wSequence,
+			mftFileEntry->wHardLinks,
+			mftFileEntry->wAttribOffset,
+			mftFileEntry->wFlags,
+			mftFileEntry->dwRecLength,
+			mftFileEntry->dwAllLength,
+			mftFileEntry->n64BaseMftRec,
+			mftFileEntry->wNextAttrID,
+			mftFileEntry->wFixUpPattern,
+			mftFileEntry->dwMFTRecNumber);
+	return 0;
+}
+
+/**
+ *	Prints the members of *bootSec into *buff
+ *	Returns -1 if error.
+ */
+int getBootSectInfo(char* buff, NTFS_BOOT_SECTOR *bootSec) {
+	sprintf(buff, "jumpInstruction: %s\n"
+			"OEM ID: %s\n"
+			"BIOS Parameter Block(BPB) data: \n"
+			"Bytes per logical sector: %u\n"
+			"Logical sectors per cluster: %u\n"
+			"Reserved logical sectors: %u\n"
+			"Media descriptor: %s\n"
+			"Physical sectors per track: %u\n"
+			"Number of heads: %u\n"
+			"Hidden sectors: %d\n"
+			"Sectors in volume: %" PRId64 "\n"
+			"Size of volume sectors: %0.2f mb\n"
+			"\n*Cluster number for MFT: %" PRId64 "\n"
+			"Mirror of cluster number for MFT: %" PRId64 "\n"
+			"MFT record size: %d\n"
+			"Index block size: %d\n"
+			"\nVolume serial number: %" PRId64 "\n"
+			"Volume checksum: %d\n"
+			"End of sector marker: %u\n",
+			bootSec->chJumpInstruction,
+			bootSec->chOemID,
+			(bootSec->bpb).wBytesPerSec,
+			(bootSec->bpb).uchSecPerClust,
+			(bootSec->bpb).wReservedSec,
+			(bootSec->bpb).uchMediaDescriptor == 0xF8?"Hard Disk":"Other",
+					(bootSec->bpb).wSecPerTrack,
+					(bootSec->bpb).wNumberOfHeads,
+					(bootSec->bpb).dwHiddenSec,
+					(bootSec->bpb).n64TotalSec,
+					(bootSec->bpb).wBytesPerSec*(bootSec->bpb).n64TotalSec/(1024.0*1024.0),
+					(bootSec->bpb).n64MFTLogicalClustNum,	/*Cluster number for MFT! */
+					(bootSec->bpb).n64MFTMirrLoficalClustNum,
+					(bootSec->bpb).nClustPerMFTRecord,
+					(bootSec->bpb).nClustPerIndexRecord,
+					(bootSec->bpb).n64VolumeSerialNum,
+					(bootSec->bpb).dwCheckSum,
+					bootSec->wSecMark );
+	return 0;
+}
+
+/**
+ * Prints the members of *part into *buff, plus some extra derived info.
+ * Returns the relative sector offest for the partition if it is NTFS,
+ * otherwise returns -1.
+ */
+int getPartitionInfo(char *buff, PARTITION *part) {
+	if(part->dwNumberSector == 0) { /*Primary partition entry is empty */
+		sprintf(buff, "Primary partition table entry empty.");
+		return -1;
+	}
+	sprintf(buff, "Is bootable: %s\n"
+			"Partition type: %s\n"
+			"Start CHS address: %d/%d/%d\n"
+			"End CHS address: %d/%d/%d\n"
+			"Relative sector: %d\n"
+			"Total sectors: %d\n"
+			"Partition size: %0.2f GB",
+			part->chBootInd == 0x80 ? "Yes" : "No",
+			part->chType == NTFS_TYPE ? "NTFS" : "Other",
+			part->chCylinder,
+			part->chHead,
+			part->chSector,
+			part->chLastCylinder,
+			part->chLastHead,
+			part->chLastSector,
+			part->dwRelativeSector,
+			part->dwNumberSector,
+			part->dwNumberSector/2097152.0);
+	if(part->chType == 0x07)
+		return part->dwRelativeSector;
+	return -1;
+}
+
+#endif
