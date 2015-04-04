@@ -11,8 +11,8 @@
 #include <stdio.h>
 #include <math.h>
 #include <stdlib.h>
-#include <sys/types.h> 	/*Various data types used elsewhere */
-#include <sys/stat.h>  	/*File information (stat et al) */
+#include <sys/types.h>
+#include <sys/stat.h>  	/*File information*/
 #include <fcntl.h>     	/*File opening, locking and other operations */
 #include <unistd.h>
 #include <errno.h>     	/*For errno */
@@ -39,7 +39,10 @@
 #define P_OFFSET 0x1BE			/*Partition information begins at offset 0x1BE */
 #define MFT_RECORD_LENGTH 1024 	/*MFT entries are 1024 bytes long */
 #define MFT_FILE_ATTR_PAD 8
-#define EXTRACTEDFILESDIR "EXTRACTED_FILES/"
+#define RESEXTFILESDIR "EXTRACTED_FILES/Resident/"
+#define NONRESEXTFILESDIR "EXTRACTED_FILES/NonResident/"
+#define MAX_EXTRACT_FSIZE 2097152		/*Max file size which will be extracted to the VMM */
+#define MAX_FILEMODIFY_AGE 216000000000	/*Max diff between the time now and a guest file modify time - 6HRS */
 
 #define IN_USE		0x01		/*MFT FILE0 record flags */
 #define DIRECTORY	0x02
@@ -359,11 +362,7 @@ int main(int argc, char* argv[]) {
 					off_t offset_restore = blk_offset; /*Backup the current read offset */
 
 					/* Move file pointer to start of partition */
-					if((blk_offset = lseek( blkDevDescriptor, relativePartSector, SEEK_SET )) == -1) {
-						int errsv = errno;
-						printf("Failed to set file pointer with error: %s.\n", strerror(errsv));
-						return EXIT_FAILURE;
-					}
+					lseekAbs(blkDevDescriptor, relativePartSector);
 
 					/*Iterate through the runlist and extract data*/
 					DataRun *p_current_item = runListP;
@@ -385,7 +384,7 @@ int main(int argc, char* argv[]) {
 						/*Read for length specified in dataRun */
 						if((readStatus = read(blkDevDescriptor, dataRun, readLength)) == -1 ){
 							int errsv = errno;
-							printf("Failed to open read MFT from disk with error: %s.\n", strerror(errsv));
+							printf("Failed to read MFT from disk with error: %s.\n", strerror(errsv));
 						} else {
 							/*Create special fragment header and write to file before records in fragment */
 							FRAG *frag = createFragRecord(blk_offset);
@@ -974,7 +973,7 @@ int main(int argc, char* argv[]) {
 		return EXIT_FAILURE;
 	}
 
-	pthread_cancel(uds_tid);	/* This is improper(possibly), but will do for now */
+	pthread_cancel(uds_tid);
 	pthread_join(uds_tid,NULL); /* Wait for thread to exit */
 	printf("UDS Server thread finished.\n");
 
@@ -995,7 +994,7 @@ int main(int argc, char* argv[]) {
 int lseekAbs(int fileDescriptor, off_t offset) {
 	if((blk_offset = lseek(fileDescriptor, offset, SEEK_SET)) == -1) {
 		int errsv = errno;
-		printf("Failed to position file pointer with error: %s.\n", strerror(errsv));
+		printf("Failed to position file pointer to %" PRId64 "with error: %s.\n", offset, strerror(errsv));
 		return EXIT_FAILURE;
 	}
 	return EXIT_SUCCESS;
@@ -1007,7 +1006,7 @@ int lseekAbs(int fileDescriptor, off_t offset) {
 int lseekRel(int fileDescriptor, off_t offset) {
 	if((blk_offset = lseek(fileDescriptor, offset, SEEK_CUR)) == -1) {
 		int errsv = errno;
-		printf("Failed to position file pointer with error: %s.\n", strerror(errsv));
+		printf("Failed to position file pointer to %" PRId64 "with error: %s.\n", offset, strerror(errsv));
 		return EXIT_FAILURE;
 	}
 	return EXIT_SUCCESS;
@@ -1031,10 +1030,11 @@ int64_t roundToNearestCluster(int64_t sec_offs, int32_t secPerClus) {
  * Given a pointer to the memory containing data, the length of the data
  * and the name of the file to be written, writes the data to disk.
  */
-int extractResFile(char * fileName, void * dataAttr, uint32_t len) {
+int extractResFile(char *fileName, void *dataAttr, uint32_t len) {
 
+	int retVal = EXIT_SUCCESS;
 	char * extractedFileName = malloc( FNAMEBUFF );
-	strcpy(extractedFileName, EXTRACTEDFILESDIR);
+	strcpy(extractedFileName, RESEXTFILESDIR);
 	strcat(extractedFileName, fileName);
 
 	/* Copy resident file data from disk to memory. */
@@ -1045,36 +1045,36 @@ int extractResFile(char * fileName, void * dataAttr, uint32_t len) {
 		int  k = 0;
 		printf("\t");
 		for(; k<len; k++) {
-			//printf("%04x", residentData[k]);
-			printf("%c", residentData[k]);
+			if(VERBOSE) {
+				printf("%04x", residentData[k]);
+			} else {
+				printf("%c", residentData[k]);
+			}
 		}
 		printf("\n");
 	}
 
 	/*Create local file to which the NTFS file data is extracted */
 	FILE *fileExtracted;
-	if((fileExtracted = fopen(extractedFileName, "w+")) == NULL) {
+	if((fileExtracted = fopen(extractedFileName, "w")) == NULL) {
 		int errsv = errno;
 		printf("Failed to create local file for storing %s: %s.\n", fileName, strerror(errsv));
-		free(residentData);
-		free(extractedFileName);
-		return EXIT_FAILURE;
+		retVal =  EXIT_FAILURE;
 	}
 
 	/*Write the file data */
 	if( fwrite( residentData, len, 1, fileExtracted ) != 1) {
 		int errsv = errno;
 		printf("Error extracting file: %s.\n", strerror(errsv));
+		retVal = EXIT_FAILURE;
 	}
 
 	/*Close the file */
-	if(fileExtracted != NULL) {
-		fclose(fileExtracted);
-	}
+	if(fileExtracted) fclose(fileExtracted);
 
 	free(residentData);
 	free(extractedFileName);
-	return EXIT_SUCCESS;
+	return retVal;
 }
 
 /**
@@ -1116,14 +1116,16 @@ void *consumerThreadFn(void *param) {
 					memcpy(mftRecHeader, mftBuff, sizeof(NTFS_MFT_FILE_ENTRY_HEADER)); /* Copy MFT record header*/
 
 					/* Check if this memory contains an MFT record, they all start 'FILE0' */
-					if(strcmp("FILE0", mftRecHeader->fileSignature) == 0) {
+					if(strcmp("FILE0", mftRecHeader->fileSignature) == 0 && mftRecHeader->wFlags==IN_USE) {
+						char *fName = NULL;
+						int fileRecentlyChanged = false;
 						uint16_t attrOffs = mftRecHeader->wAttribOffset; 	 	    /*Offset to first attribute */
-						char * fName = malloc( BUFFSIZE );
+
 						do {
 							/*------- Attribute size is unknown, so get header first which contains size -------*/
 							memcpy(mftRecAttrTmp, mftBuff+attrOffs, sizeof(NTFS_ATTRIBUTE));
 
-							/*- NOTE: Some attributes have impossible record lengths > 1024, this breaks things -*/
+							/*  NOTE: Some attributes have impossible record lengths > 1024, this breaks things */
 							if(mftRecAttrTmp->dwFullLength > MFT_RECORD_LENGTH-attrOffs) {
 								break;
 							}
@@ -1131,42 +1133,152 @@ void *consumerThreadFn(void *param) {
 							/*-------- Determine actual attribute length and use to copy full attribute --------*/
 							memcpy(mftRecAttr, mftBuff+attrOffs, mftRecAttrTmp->dwFullLength);
 
-							if(mftRecAttr->dwType == STANDARD_INFORMATION) { /*Contains create/modify stamps */
+							if(mftRecAttr->dwType == STANDARD_INFORMATION) { 	/*Contains create/modify stamps */
 								STD_INFORMATION *stdInfo = malloc( sizeof(STD_INFORMATION) );
 								memcpy(stdInfo,					   /*STANDARD_INFORMATION is always resident */
 										mftBuff+attrOffs+(mftRecAttr->Attr).Resident.wAttrOffset,
 										sizeof(STD_INFORMATION) );
-								uint64_t altTime = stdInfo->fileAltTime;
-								printf("\tFile alt time:" KWHT "%" PRIu64 " " KRESET "\n", altTime);
+
+								/* Establish how recently the file in question was modified */
+								uint64_t fileAltTime = stdInfo->fileAltTime;
+								if(fileAltTime < (linuxTimetoNTFStime()-MAX_FILEMODIFY_AGE)) {
+									fileRecentlyChanged = true;
+								}
+								if(DEBUG) printf("\tFile alt time:" KWHT "%" PRIu64 " " KRESET "\n", fileAltTime);
 								free(stdInfo);
 							}
 
 							else if(mftRecAttr->dwType == FILE_NAME) { /* Get file name */
-								fName = getFileName(mftRecAttr, mftBuff, attrOffs);
-								printf(KWHT "\t%s" KRESET "\n", fName);
+								if(fName) {
+									free(fName);
+									fName = getFileName(mftRecAttr, mftBuff, attrOffs);
+								} else {
+									fName = getFileName(mftRecAttr, mftBuff, attrOffs);
+								}
+								if(DEBUG) printf(KWHT "\t%s" KRESET "\n", fName);
 							}
 
-							else if(mftRecAttr->dwType == DATA) {
+							/**
+							 * Only extract files for which:
+							 *  - We have found a valid file name.
+							 *  - The file has been modified 'recently' (MAX_FILEMODIFY_AGE).
+							 *  - The file is flagged as 'IN_USE' by NTFS
+							 */
+							else if(mftRecAttr->dwType == DATA && fName && fileRecentlyChanged) {
 								if(DEBUG) printf("Has data\n");
-								if(mftRecAttr->uchNonResFlag==false) { /*$DATA is resident */
+								if(mftRecAttr->uchNonResFlag == false) { /*$DATA is resident */
+
 									uint32_t attrDataSize = (mftRecAttr->Attr.Resident).dwLength;
 									size_t attrDataOffs = (mftRecAttr->Attr.Resident).wAttrOffset;
 									if(DEBUG) printf("\tData size: %d Bytes.\n", attrDataSize);
-									if(attrDataSize) { /*Don't bother with 0 sized files */
+									if(attrDataSize > 0 && attrDataSize < MAX_EXTRACT_FSIZE) { /*Don't bother with 0 sized files */
 										/* Extract the file to disk */
 										extractResFile(fName, mftBuff+attrOffs+attrDataOffs, attrDataSize);
 									}
-								}
-							}
 
+								} else if(mftRecAttr->uchNonResFlag) { /* Non-resident file data */
+
+									FILE *nonResFile;
+									uint8_t countRuns = 0;
+									uint64_t nonResFileSize = 0;
+									char * extFileName;
+									OFFS_LEN_BITFIELD *offs_len_bitField = malloc( sizeof(OFFS_LEN_BITFIELD) );
+									uint16_t dataRunOffset = (mftRecAttr->Attr).NonResident.wDatarunOffset;
+									DataRun *runListP = NULL; /*Allocate for runlist */
+
+									do {
+										uint64_t length = 0;  /* The length and offset data run fields are always 8 or less bytes */
+										int64_t offset = 0;   /* Offset is signed */
+										if(countRuns == 0) {  /* Read first data run from runlist */
+											memcpy(offs_len_bitField, mftBuff+attrOffs+dataRunOffset, sizeof(OFFS_LEN_BITFIELD));
+										}
+
+										dataRunOffset++; 	  /*Move offset past offset_length_union */
+
+										/*Copy length field from run list */
+										memcpy(&length, mftBuff+attrOffs+dataRunOffset, offs_len_bitField->bitfield.lengthSize);
+										dataRunOffset+=offs_len_bitField->bitfield.lengthSize; /*Move offset past length field */
+										/*Copy offset field from run list */
+										memcpy(&offset, mftBuff+attrOffs+dataRunOffset, offs_len_bitField->bitfield.offsetSize);
+										dataRunOffset+=offs_len_bitField->bitfield.offsetSize; /*Move offset past offset field */
+
+										runListP = addRun(runListP, length, offset); /*Add extracted run to runlist */
+
+										countRuns++;
+										nonResFileSize += length;
+
+										/*Copy next bitfield header, check if == 0 for loop termination */
+										memcpy(offs_len_bitField, mftBuff+attrOffs+dataRunOffset, sizeof(OFFS_LEN_BITFIELD));
+									} while(offs_len_bitField->val != 0);
+									free(offs_len_bitField);
+
+									nonResFileSize*=dwBytesPerCluster;
+									if((nonResFileSize > 0) &&
+									   (nonResFileSize < MAX_EXTRACT_FSIZE) &&
+									   runListP) {
+
+										runListP = reverseList(runListP);			  /* Put the data runs in disk order */
+										extFileName = malloc( FNAMEBUFF );
+										strcpy(extFileName, NONRESEXTFILESDIR);
+										strcat(extFileName, fName);
+
+
+										if((nonResFile = fopen(extFileName, "w")) == NULL) {/* Open/create file, r/w pointer at start */
+											int errsv = errno;
+											printf("Failed to create local file %s: %s.\n", fName, strerror(errsv));
+											//break;
+										}
+										uint64_t relOffset = relativePartSector;
+										DataRun *pCurrentRun = runListP;
+										while (pCurrentRun) {	/* Iterate through the runlist and extract data*/
+
+											/* Move file pointer to the non-resident data  */
+											off_t runRelOffset =  dwBytesPerCluster*(pCurrentRun->offset);
+											size_t runLength = dwBytesPerCluster*pCurrentRun->length;
+
+											relOffset += runRelOffset;
+											lseekAbs(blkDevDescriptor, relOffset);
+
+											BYTE *nonResFileD = malloc( runLength );
+
+											/* Read for length specified in dataRun */
+											if((blkRead = read(blkDevDescriptor, nonResFileD, runLength)) == -1 ){
+												int errsv = errno;
+												printf("Failed to read data from guest disk at %d with error: %s.\n", blkRead, strerror(errsv));
+												//break;
+											} else {
+												/* Copy the memory to the local file */
+												if( fwrite( nonResFileD, runLength, 1, nonResFile) != 1) {
+													int errsv = errno;
+													printf("Failed to write to local file %s with error: %s.\n", fName, strerror(errsv));
+													//break;
+												}
+											}
+											free(nonResFileD);
+
+											pCurrentRun = pCurrentRun->p_next; /*Advance position in list */
+										} // while (runListP)
+										if(nonResFile && fclose(nonResFile) != 0) {
+											int errsv = errno;
+											printf("Failed to close file %s with error: %s.\n", extFileName, strerror(errsv));
+											//break;
+										}
+									}
+									freeRunList(runListP);
+									if(extFileName) {
+										free(extFileName);
+										extFileName = NULL;
+									}
+								} // if(mftRecAttr->uchNonResFlag)
+							} //if(mftRecAttr->dwType == DATA)
 							attrOffs += mftRecAttr->dwFullLength;    /*Increment the offset by the length of this attribute */
-						} while(attrOffs+8 < mftRecHeader->dwRecLength); /*While there are attributes left to inspect */
+						} while(attrOffs+MFT_FILE_ATTR_PAD < mftRecHeader->dwRecLength); /*While there are attributes left to inspect */
 						if(fName) {
 							free(fName);
+							fName = NULL;
 						}
-					}
-
-				}
+					} //if a file record is found (FILE0)
+				} // for(; recN.. Runs for as many times as there are potential file records in the disk write
 
 				/*Check the modified time to help eliminate some records*/
 				free(mftBuff);

@@ -1,3 +1,7 @@
+#ifndef NTFSATT2H_
+#define NTFSATTRH_
+
+#include <time.h>
 #include "Debug.h"
 
 /*NTFS Attribute types */
@@ -16,6 +20,11 @@
 #define EA_INFORMATION 0xD0
 #define EA 0xE0
 #define LOGGED_UTILITY_STREAM 0x100
+
+/*Linux and NTFS time constants */
+#define TIME_NTFSPERLINUX 10000000 			  /*NTFS uses 100ns intervals, Linux uses 1s intervals */
+#define TIME_NTFSTOLINUXOFFSET 1.16444916e+17 /*Number of 100ns intervals between 01/01/1601 and 01/01/1970 */
+
 
 /*File permissions */
 #define RDONLY		0x0001
@@ -128,3 +137,18 @@ char *getFileName(NTFS_ATTRIBUTE *mftRecAttr, char *mftBuffer, uint16_t offs ) {
 	free(fileNameAttr);
 	return asciiFileName;
 }
+
+/**
+ * Gets the current time and converts it to the same format used by NTFS file timestamps.
+ */
+uint64_t linuxTimetoNTFStime() {
+	uint64_t linuxTime = (uint64_t)time(NULL);
+	uint64_t ntfsTime = (linuxTime*TIME_NTFSPERLINUX)+TIME_NTFSTOLINUXOFFSET;
+	if(DEBUG&&VERBOSE) {
+		printf("Linux time: %" PRIu64 "\n", linuxTime);
+		printf("NTFS time:  %" PRIu64 "\n", ntfsTime);
+	}
+	return ntfsTime;
+}
+
+#endif

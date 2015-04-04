@@ -40,13 +40,8 @@ void printRuns(char * buff, DataRun *p_head) {
 
 	DataRun *p_current_item = p_head;
 	sprintf(buff, "\tVCN\tLength\n");
-	while (p_current_item) {    // Loop while the current pointer is not NULL.
-		if (p_current_item->offset && p_current_item->length) {
-			sprintf(buff + strlen(buff), "\t%" PRIu64 "\t%" PRId64 "\n", p_current_item->offset, p_current_item->length);
-		} else {
-			sprintf(buff + strlen(buff), "\tNo data.\n");
-		}
-		// Advance the current pointer to the next item in the list.
+	while (p_current_item) {
+		sprintf(buff + strlen(buff), "\t%" PRIu64 "\t%" PRId64 "\n", p_current_item->offset, p_current_item->length);
 		p_current_item = p_current_item->p_next;
 	}
 }
