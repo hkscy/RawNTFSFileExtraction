@@ -42,7 +42,8 @@
 #define RESEXTFILESDIR "EXTRACTED_FILES/Resident/"
 #define NONRESEXTFILESDIR "EXTRACTED_FILES/NonResident/"
 #define MAX_EXTRACT_FSIZE 2097152		/*Max file size which will be extracted to the VMM */
-#define MAX_FILEMODIFY_AGE 216000000000	/*Max diff between the time now and a guest file modify time - 6HRS */
+#define MAX_FILEMODIFY_AGE 6000000000 //72000000000 /*Max diff between the time now and a guest file modify time - 2HRS */
+
 
 #define IN_USE		0x01		/*MFT FILE0 record flags */
 #define DIRECTORY	0x02
@@ -68,12 +69,14 @@ void *consumerThreadFn(void *param);
 
 uint16_t blkDevDescriptor = 0;		/*File descriptor for block device */
 off_t blk_offset = 0;
+uint64_t endOfDev = -1;
 uint32_t dwBytesPerCluster = -1;  	/*Bytes per cluster on the disk */
 uint64_t relativePartSector = -1; 	/*Relative offset in bytes of the NTFS partition table */
 
 FILE * MFT_offline_copy;
 
 int main(int argc, char* argv[]) {
+	QInit();
 	ssize_t readStatus;
 	int workingPartition = -1;
 	uint64_t u64bytesAbsoluteMFT = -1;
@@ -89,6 +92,14 @@ int main(int argc, char* argv[]) {
 		printf("Failed to open block device %s with error: %s.\n", BLOCK_DEVICE, strerror(errsv));
 		return EXIT_FAILURE;
 	}
+
+	if((endOfDev = lseek(blkDevDescriptor, 0, SEEK_END)) == -1) {
+		int errsv = errno;
+		printf("Failed to locate end of block device %s with error: %s.\n", BLOCK_DEVICE, strerror(errsv));
+		return EXIT_FAILURE;
+	}
+	if(DEBUG) printf("end of block device: %" PRIu64 "\n", endOfDev);
+
 
 	/*Seek partition table  */
 	lseekAbs(blkDevDescriptor, P_OFFSET);
@@ -429,6 +440,7 @@ int main(int argc, char* argv[]) {
 		}
 		free(nTFS_Boot);		/*Free Boot sector memory */
 		free(mftMetaMFT);		/*File record buffer */
+
 		/*Close local file copy of MFT if open */
 		if(MFT_offline_copy != NULL) {
 			fclose(MFT_offline_copy);
@@ -882,7 +894,7 @@ int main(int argc, char* argv[]) {
 											mftBuff+attrOffs+(mftRecAttr->Attr).Resident.wAttrOffset,
 											sizeof(STD_INFORMATION) );
 									uint64_t altTime = stdInfo->fileAltTime;
-									printf("File alt time: %" PRIu64 "\n", altTime);
+									printf("\tFile alt time: %" PRIu64 "\n", altTime);
 									free(stdInfo);
 								}
 
@@ -893,7 +905,7 @@ int main(int argc, char* argv[]) {
 
 								else if(mftRecAttr->dwType == DATA) {
 									printf("Has data\n");
-									if(mftRecAttr->uchNonResFlag==false) { /*$DATA is resident */
+									if(mftRecAttr->uchNonResFlag == false) { /*$DATA is resident */
 										uint32_t attrDataSize = (mftRecAttr->Attr.Resident).dwLength;
 										size_t attrDataOffs = (mftRecAttr->Attr.Resident).wAttrOffset;
 										printf("\tData size: %d Bytes.\n", attrDataSize);
@@ -994,7 +1006,7 @@ int main(int argc, char* argv[]) {
 int lseekAbs(int fileDescriptor, off_t offset) {
 	if((blk_offset = lseek(fileDescriptor, offset, SEEK_SET)) == -1) {
 		int errsv = errno;
-		printf("Failed to position file pointer to %" PRId64 "with error: %s.\n", offset, strerror(errsv));
+		printf("Failed to position file pointer to %" PRId64 " with error: %s.\n", offset, strerror(errsv));
 		return EXIT_FAILURE;
 	}
 	return EXIT_SUCCESS;
@@ -1006,7 +1018,7 @@ int lseekAbs(int fileDescriptor, off_t offset) {
 int lseekRel(int fileDescriptor, off_t offset) {
 	if((blk_offset = lseek(fileDescriptor, offset, SEEK_CUR)) == -1) {
 		int errsv = errno;
-		printf("Failed to position file pointer to %" PRId64 "with error: %s.\n", offset, strerror(errsv));
+		printf("Failed to position file pointer to %" PRId64 " with error: %s.\n", offset, strerror(errsv));
 		return EXIT_FAILURE;
 	}
 	return EXIT_SUCCESS;
@@ -1104,7 +1116,7 @@ void *consumerThreadFn(void *param) {
 					break;
 				}
 
-				/* Seek MFT records from the cluster memory*/
+				/* Seek MFT records from the cluster memory */
 				uint8_t recN = 0;
 				char *mftBuff = malloc( MFT_RECORD_LENGTH );
 				NTFS_MFT_FILE_ENTRY_HEADER *mftRecHeader = malloc( sizeof(NTFS_MFT_FILE_ENTRY_HEADER) );
@@ -1141,7 +1153,7 @@ void *consumerThreadFn(void *param) {
 
 								/* Establish how recently the file in question was modified */
 								uint64_t fileAltTime = stdInfo->fileAltTime;
-								if(fileAltTime < (linuxTimetoNTFStime()-MAX_FILEMODIFY_AGE)) {
+								if(linuxTimetoNTFStime()-fileAltTime >= MAX_FILEMODIFY_AGE) {
 									fileRecentlyChanged = true;
 								}
 								if(DEBUG) printf("\tFile alt time:" KWHT "%" PRIu64 " " KRESET "\n", fileAltTime);
@@ -1166,7 +1178,7 @@ void *consumerThreadFn(void *param) {
 							 */
 							else if(mftRecAttr->dwType == DATA && fName && fileRecentlyChanged) {
 								if(DEBUG) printf("Has data\n");
-								if(mftRecAttr->uchNonResFlag == false) { /*$DATA is resident */
+								if(mftRecAttr->uchNonResFlag == false) { /* $DATA is resident */
 
 									uint32_t attrDataSize = (mftRecAttr->Attr.Resident).dwLength;
 									size_t attrDataOffs = (mftRecAttr->Attr.Resident).wAttrOffset;
@@ -1181,10 +1193,10 @@ void *consumerThreadFn(void *param) {
 									FILE *nonResFile;
 									uint8_t countRuns = 0;
 									uint64_t nonResFileSize = 0;
-									char * extFileName;
+									char * extFileName = NULL;
 									OFFS_LEN_BITFIELD *offs_len_bitField = malloc( sizeof(OFFS_LEN_BITFIELD) );
 									uint16_t dataRunOffset = (mftRecAttr->Attr).NonResident.wDatarunOffset;
-									DataRun *runListP = NULL; /*Allocate for runlist */
+									DataRun *runListP = NULL; /* Allocate for runlist */
 
 									do {
 										uint64_t length = 0;  /* The length and offset data run fields are always 8 or less bytes */
@@ -1195,11 +1207,17 @@ void *consumerThreadFn(void *param) {
 
 										dataRunOffset++; 	  /*Move offset past offset_length_union */
 
-										/*Copy length field from run list */
+										/* Copy length field from run list */
 										memcpy(&length, mftBuff+attrOffs+dataRunOffset, offs_len_bitField->bitfield.lengthSize);
 										dataRunOffset+=offs_len_bitField->bitfield.lengthSize; /*Move offset past length field */
-										/*Copy offset field from run list */
+										/* Copy offset field from run list */
 										memcpy(&offset, mftBuff+attrOffs+dataRunOffset, offs_len_bitField->bitfield.offsetSize);
+
+										/* Check that this data run is physically possible, if not then abort */
+										if(offset*dwBytesPerCluster + relativePartSector + length > endOfDev) {
+											if(DEBUG) printf("Invalid offset in runlist: %" PRIu64 "\n", offset);
+											break;
+										}
 										dataRunOffset+=offs_len_bitField->bitfield.offsetSize; /*Move offset past offset field */
 
 										runListP = addRun(runListP, length, offset); /*Add extracted run to runlist */
@@ -1223,22 +1241,22 @@ void *consumerThreadFn(void *param) {
 										strcat(extFileName, fName);
 
 
-										if((nonResFile = fopen(extFileName, "w")) == NULL) {/* Open/create file, r/w pointer at start */
+										if((nonResFile = fopen(extFileName, "w")) == NULL) { /* Open/create file, r/w pointer at start */
 											int errsv = errno;
 											printf("Failed to create local file %s: %s.\n", fName, strerror(errsv));
-											//break;
+											break;
 										}
-										uint64_t relOffset = relativePartSector;
+
+										lseekAbs(blkDevDescriptor, relativePartSector);	/* Move to beginning of volume */
 										DataRun *pCurrentRun = runListP;
 										while (pCurrentRun) {	/* Iterate through the runlist and extract data*/
 
 											/* Move file pointer to the non-resident data  */
-											off_t runRelOffset =  dwBytesPerCluster*(pCurrentRun->offset);
+											if(lseekRel(blkDevDescriptor, (pCurrentRun->offset)*dwBytesPerCluster) == EXIT_FAILURE) {
+												break;
+											}
+											/* Allocate memory for the data */
 											size_t runLength = dwBytesPerCluster*pCurrentRun->length;
-
-											relOffset += runRelOffset;
-											lseekAbs(blkDevDescriptor, relOffset);
-
 											BYTE *nonResFileD = malloc( runLength );
 
 											/* Read for length specified in dataRun */
@@ -1256,6 +1274,10 @@ void *consumerThreadFn(void *param) {
 											}
 											free(nonResFileD);
 
+											/* Rewind the file pointer by the length of the current run */
+											if(lseekRel(blkDevDescriptor, (-1)*(pCurrentRun->length)*dwBytesPerCluster) == EXIT_FAILURE) {
+												break;
+											}
 											pCurrentRun = pCurrentRun->p_next; /*Advance position in list */
 										} // while (runListP)
 										if(nonResFile && fclose(nonResFile) != 0) {

@@ -31,6 +31,7 @@ void *udsServerThreadFn( void *socket_path );
 /*FIFO buffer for QEMU writes */
 QEMU_OFFS_LEN writeQueue[Q_SIZE];
 int writeQueueIn = 0, writeQueueOut = 0;
+pthread_mutex_t mutexqueue;
 
 char *socket_path = "\0diskTap";
 int udsFD;
@@ -45,7 +46,6 @@ void *udsServerThreadFn(void *socket_path) {
 	BYTE buffer[SOCKET_BUFF];
 	QEMU_OFFS_LEN buff;
 	int socketDescriptor, udsReadStatus;
-	QInit();
 
 	if ( (udsFD = socket(AF_UNIX, SOCK_STREAM, 0)) == -1) {
 		perror("socket error");
@@ -69,7 +69,8 @@ void *udsServerThreadFn(void *socket_path) {
 
 	while (true) {
 		if ( (socketDescriptor = accept(udsFD, NULL, NULL)) == -1) {
-			perror("accept error");
+			int errsv = errno;
+			printf("Accept error: %s\n", strerror(errsv));
 			continue;
 		}
 
@@ -80,7 +81,8 @@ void *udsServerThreadFn(void *socket_path) {
 		}
 
 		if (udsReadStatus == -1) { /*Error reading socket */
-			perror("Read UDS socket error");
+			int errsv = errno;
+			printf("Read from UDS socket error: %s\n", strerror(errsv));
 			pthread_exit(NULL);
 		}
 
@@ -98,7 +100,9 @@ void *udsServerThreadFn(void *socket_path) {
  */
 void QInit()
 {
-    writeQueueIn = writeQueueOut = 0;
+
+	writeQueueIn = 0;
+	writeQueueOut = 0;
 }
 
 /**
@@ -106,11 +110,14 @@ void QInit()
  */
 int QPut(QEMU_OFFS_LEN qItem)
 {
+	pthread_mutex_lock (&mutexqueue);
 	if(writeQueueIn == (( writeQueueOut - 1 + Q_SIZE) % Q_SIZE)) {
+		pthread_mutex_unlock (&mutexqueue);
 		return -1;	/* Queue Full*/
 	} else {
 		writeQueue[writeQueueIn] = qItem;
 		writeQueueIn = (writeQueueIn + 1) % Q_SIZE;
+		pthread_mutex_unlock (&mutexqueue);
 		return 0;
 	}
 }
@@ -120,11 +127,14 @@ int QPut(QEMU_OFFS_LEN qItem)
  */
 int QGet(QEMU_OFFS_LEN *qItem)
 {
+	pthread_mutex_lock (&mutexqueue);
     if(writeQueueIn == writeQueueOut) {
+    	pthread_mutex_unlock (&mutexqueue);
         return -1;	/* Queue Empty */
     } else {
     	*qItem = writeQueue[writeQueueOut];
     	writeQueueOut = (writeQueueOut + 1) % Q_SIZE; /*Wrap round to zero */
+    	pthread_mutex_unlock (&mutexqueue);
     	return 0;
     }
 }
