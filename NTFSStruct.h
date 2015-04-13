@@ -1,5 +1,8 @@
+/* Christopher Hicks */
 #ifndef NTFSSTRUCT_H_
 #define NTFSSTRUCT_H_
+
+#include <inttypes.h>
 
 #define FRAG_PADDING 1008
 #define BUFFSIZE 1024
@@ -184,10 +187,11 @@ typedef unsigned char BYTE; /*Define byte abbreviation */
 #pragma pack(pop)
 
 /* Verbose debug methods */
+FRAG *createFragRecord(uint64_t fragOffset);
 int getPartitionInfo(char *buff, PARTITION *part);
 int getBootSectInfo(char* buff, NTFS_BOOT_SECTOR *bootSec);
 int getFILE0Attrib(char* buff, NTFS_MFT_FILE_ENTRY_HEADER *mftFileEntry);
-int getMFTAttribMembers(char * buff, NTFS_ATTRIBUTE* attrib);
+int getFileAttribMembers(char * buff, NTFS_ATTRIBUTE* attrib);
 
 /**
  *	Create a Fragment record which contains the offset from which the MFT records
@@ -214,7 +218,7 @@ FRAG *createFragRecord(uint64_t fragOffset) {
 /*
  * Prints the members of an MFT FILE record attribute into buff.
  */
-int getMFTAttribMembers(char * buff, NTFS_ATTRIBUTE* attrib) {
+int getFileAttribMembers(char * buff, NTFS_ATTRIBUTE* attrib) {
 	char* tempBuff = malloc(BUFFSIZE);
 	sprintf(tempBuff, "Attribute type: %d\n"// PRIu32 "\n"
 			"Length of attribute: %d\n"//%" PRIu32 "\n",
@@ -231,7 +235,24 @@ int getMFTAttribMembers(char * buff, NTFS_ATTRIBUTE* attrib) {
 					attrib->wFlags,
 					attrib->wID);
 	if(attrib->uchNonResFlag) { /*If attribute is Non-Resident*/
-		sprintf(buff, "%s", tempBuff);
+
+		sprintf(buff, "%s"
+					  "n64StartVCN: %" PRId64 "\n"
+					  "n64EndVCN: %" PRId64 "\n"
+					  "wDatarunOffset: %u\n"
+					  "wCompressionSize: %u\n"
+					  "n64AllocSize: %" PRId64 "\n"
+					  "n64RealSize: %" PRId64 "\n"
+					  "n64StreamSize: %" PRId64 "\n"
+					  ,tempBuff,
+					  (attrib->Attr).NonResident.n64StartVCN,
+					  (attrib->Attr).NonResident.n64EndVCN,
+					  (attrib->Attr).NonResident.wDatarunOffset,
+					  (attrib->Attr).NonResident.wCompressionSize,
+					  (attrib->Attr).NonResident.n64AllocSize,
+					  (attrib->Attr).NonResident.n64RealSize,
+					  (attrib->Attr).NonResident.n64StreamSize);
+
 
 	} else{ /*Attribute is resident */
 		sprintf(buff, "%s"

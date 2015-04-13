@@ -4,11 +4,12 @@
  *  Created on: 10 Mar 2015
  *      Author: Christopher Hicks
  */
-
-#include <string.h>
-
 #ifndef USERINTERFACE_H_
 #define USERINTERFACE_H_
+
+#include <string.h>
+#include <stdio.h>
+#include <stdlib.h>
 
 /* Colour codes for enhancing readability*/
 #define KGRN   "\x1B[32m"

@@ -1,2 +1,7 @@
 /.svn
 *.svn-base
+/EXTRACTED_FILES
+/CMakeFiles
+CMakeCache.txt
+$MFT*
+*.cmake

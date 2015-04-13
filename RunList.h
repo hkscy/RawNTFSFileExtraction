@@ -1,3 +1,7 @@
+/*Christopher Hicks */
+#ifndef RUNLIST_H_
+#define RUNLIST_H_
+
 #include <inttypes.h>
 #include "Debug.h"
 
@@ -77,3 +81,5 @@ DataRun* reverseList(DataRun *p_head) {
   }
   return p_new_head;
 }
+
+#endif

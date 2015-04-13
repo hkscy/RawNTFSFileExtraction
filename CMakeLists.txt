@@ -1,0 +1,6 @@
+cmake_minimum_required (VERSION 3.0.2)
+project (RawNTFSExtraction C CXX)
+find_package (Threads REQUIRED)
+file (GLOB sources *.h *.c *.hxx *.cxx)
+add_executable (RawNTFSExtraction ${sources})
+target_link_libraries (RawNTFSExtraction ${CMAKE_THREAD_LIBS_INIT})

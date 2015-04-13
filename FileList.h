@@ -1,5 +1,5 @@
 /*
- * FileLUT.h
+ * FileList.h
  *
  *  Created on: 9 Mar 2015
  *      Author: Christopher Hicks
@@ -7,10 +7,13 @@
  * A linked list which links file name, offset on disk to the file location, and the
  * number of the corresponding MFT record.
  */
-#include "UserInterface.h"
+#ifndef FILELIST_H_
+#define FILELIST_H_
 
-#ifndef FILELUT_H_
-#define FILELUT_H_
+#include "UserInterface.h"
+#include <stdlib.h>
+#include <stdint.h>
+#include <inttypes.h>
 
 /* Represents the information necessary to link file writes with file names on disk */
 typedef struct _File {
@@ -18,7 +21,7 @@ typedef struct _File {
 	int64_t sec_offset;		/* Offset in sectors to the file record */
 	int64_t cl_offset;		/* Offset to the cluster which contains this record(amongst others) */
 	uint32_t length;		/* Length of the file in bytes */
-	uint32_t recordNumber;	/* MFT record number from which this originates*/
+	uint32_t recordNumber;	/* MFT record number from which this originates */
 	struct _File *p_next;	/* Pointer to next file record */
 } File;
 
@@ -43,6 +46,8 @@ File* addFile(File *p_head, char *fileName,
 
 /**
  * Adds a copy of an existing file (source) to the head of the list at *dest
+ *
+ * Returns the new pointer to the head of the list (dest)
  */
 File* addFileCopy(File *source, File *dest) {
 	return addFile(dest, source->fileName,
@@ -110,7 +115,16 @@ File *searchFiles(File *p_head, uint8_t srchType, char * searchTerm) {
 						printf("Please enter a valid search query.\n");
 					}
 				}
-			} else if (SRCH_OFFS == srchType) { /*Search for records using disk offset to content */
+			} else if (SRCH_OFFS == srchType) {
+				if( p_current_item->sec_offset == d64SearchTerm ) { /*use cluster offset not sector */
+				if(d64SearchTerm != 0) {
+					printFile(p_current_item);
+					foundFiles = addFileCopy(p_current_item, foundFiles);
+				} else {
+					printf("Please enter a valid search query.\n");
+				}
+			}
+			} else if (SRCH_CROFFS == srchType) { /*Search for records using disk offset to content */
 				if( p_current_item->cl_offset == d64SearchTerm ) { /*use cluster offset not sector */
 					if(d64SearchTerm != 0) {
 						printFile(p_current_item);
@@ -153,4 +167,4 @@ int freeFilesList(File *p_head)	{
 	return items_freed;
 }
 
-#endif /* FILELUT_H_ */
+#endif /* FILELIST_H_ */

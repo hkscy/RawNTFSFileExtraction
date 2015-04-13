@@ -1,8 +1,13 @@
+/* Christopher Hicks */
 #ifndef NTFSATT2H_
 #define NTFSATTRH_
 
+#include <stdlib.h>
+#include <inttypes.h>
 #include <time.h>
+#include <iconv.h>
 #include "Debug.h"
+#include "NTFSStruct.h"
 
 /*NTFS Attribute types */
 #define STANDARD_INFORMATION 0x10	/*MFT Record attribute constants */
@@ -24,7 +29,6 @@
 /*Linux and NTFS time constants */
 #define TIME_NTFSPERLINUX 10000000 			  /*NTFS uses 100ns intervals, Linux uses 1s intervals */
 #define TIME_NTFSTOLINUXOFFSET 1.16444916e+17 /*Number of 100ns intervals between 01/01/1601 and 01/01/1970 */
-
 
 /*File permissions */
 #define RDONLY		0x0001
@@ -80,6 +84,10 @@
 
 #pragma pack(pop)
 
+uint32_t getFilePermissions(STD_INFORMATION *stdInfo);
+char *getFileName(NTFS_ATTRIBUTE *mftRecAttr, char *mftBuffer, uint16_t offs );
+uint64_t linuxTimetoNTFStime();
+
 /**
 *	Returns the file permissions member for a given $STANDARD_INFORMATION attribute.
 */
@@ -94,29 +102,31 @@ uint32_t getFilePermissions(STD_INFORMATION *stdInfo) {
  *
  * 	returns the fileName in 8-bit character width.
  *
- * 	WARNING: Memory is allocated for asciiFileName, need to free the returned pointer.
+ * 	WARNING: Memory is allocated for utf8FileName, need to free the returned pointer.
  */
 char *getFileName(NTFS_ATTRIBUTE *mftRecAttr, char *mftBuffer, uint16_t offs ) {
-	char *asciiFileName;
 
+	char *utf8fileName = NULL;
 	if(!mftRecAttr->dwType == FILE_NAME) { /*Make sure this is a FILE_NAME attribute */
 		return NULL;
 	}
 
-	FILE_NAME_ATTR *fileNameAttr = malloc( mftRecAttr->Attr.Resident.dwLength + 1 );
+	FILE_NAME_ATTR *fileNameAttr = malloc( mftRecAttr->Attr.Resident.dwLength );
 	memcpy(fileNameAttr, mftBuffer+offs+(mftRecAttr->Attr).Resident.wAttrOffset,
 										(mftRecAttr->Attr).Resident.dwLength);
 
-	uint16_t* wFileName = fileNameAttr->arrUnicodeFileName;
+	char *unicodeFileName = (char*)&fileNameAttr->arrUnicodeFileName;
 
-	asciiFileName = malloc( fileNameAttr->bFileNameLength + 1 );
-	*asciiFileName = '\0';
+	utf8fileName = malloc(fileNameAttr->bFileNameLength+1);
+	*utf8fileName = '\0';
+
+	size_t unicodeLen = 2*fileNameAttr->bFileNameLength;
 
 	int  k;
-	/* Convert UNICODE filename to ASCII filename */
-	for(k = 0; k<fileNameAttr->bFileNameLength; k++) {
-		if((wFileName[k] & 0xFF) > 20 ) { /*Bottom 20 are control characters */
-			sprintf(asciiFileName + strlen(asciiFileName), "%c", wFileName[k]&0xFF);
+	/* Convert UNICODE filename to UTF8 filename */
+	for(k = 0; k<unicodeLen; k++) {
+		if (unicodeFileName[k]<0x80 && unicodeFileName[k]>0x14) {
+			sprintf(utf8fileName + strlen(utf8fileName), "%c", unicodeFileName[k]);
 		}
 	}
 
@@ -127,15 +137,15 @@ char *getFileName(NTFS_ATTRIBUTE *mftRecAttr, char *mftBuffer, uint16_t offs ) {
 
 		/* Print out the file name of the record*/
 		printf("\tFile name: ");
-		int  k = 0;
-		for(; k<fileNameAttr->bFileNameLength; k++) {
-			printf("%c", wFileName[k]&0xFF); /*Mask just the final 8 bits */
+		int  j = 0;
+		for(; j<fileNameAttr->bFileNameLength; j++) {
+			printf("%c", unicodeFileName[k]&0xFF); /*Mask just the final 8 bits */
 		}
 		printf("\n");
 	}
 
 	free(fileNameAttr);
-	return asciiFileName;
+	return utf8fileName;
 }
 
 /**

@@ -27,8 +27,7 @@
 #include "NTFSAttributes.h"
 #include "RunList.h"
 #include "Debug.h"
-#include "Utility.h"
-#include "FileLUT.h"
+#include "FileList.h"
 #include "UserInterface.h"
 #include "UDSServer.h"
 
@@ -54,7 +53,7 @@ static const char BLOCK_DEVICE[] = "/dev/mechastriessand/windows7";
 int getPartitionInfo(char *buff, PARTITION *part);
 int getBootSectInfo(char* buff, NTFS_BOOT_SECTOR *bootSec);
 int getFILE0Attrib(char* buff, NTFS_MFT_FILE_ENTRY_HEADER *mftFileEntry);
-int getMFTAttribMembers(char * buff, NTFS_ATTRIBUTE* attrib);
+int getFileAttribMembers(char * buff, NTFS_ATTRIBUTE* attrib);
 
 /*Seek methods for block device file descriptor */
 int lseekAbs(int fileDescriptor, off_t offset);
@@ -186,7 +185,7 @@ int main(int argc, char* argv[]) {
 
 		//for(i = 0; i < MFT_META_HEADERS; i++) { /*For each of the MFT entries */
 		bool isMFTFile = false;	/*Set true only for the MFT entry */
-		char * ascFileName = NULL;
+		char * utf8FileName = NULL;
 		mftMetaMFT = malloc( sizeof(NTFS_MFT_FILE_ENTRY_HEADER) ); /*Allocate for the file header */
 		/* Read the MFT entry */
 		if((readStatus = read( blkDevDescriptor, mftBuffer, MFT_RECORD_LENGTH)) == -1) { /*Read the next record */
@@ -216,7 +215,7 @@ int main(int argc, char* argv[]) {
 			mftRecAttrib = malloc(mftRecAttribTemp->dwFullLength);
 			memcpy(mftRecAttrib, mftBuffer+attribOffset, mftRecAttribTemp->dwFullLength);
 			if (VERBOSE & DEBUG) {
-				getMFTAttribMembers(buff, mftRecAttrib);
+				getFileAttribMembers(buff, mftRecAttrib);
 				printf("%s\n", buff);
 			}
 
@@ -227,9 +226,9 @@ int main(int argc, char* argv[]) {
 				printf("ATTRIBUTE_LIST attribute\n");
 			}
 			else if(mftRecAttrib->dwType == FILE_NAME) { /*If is FILE_NAME attribute */
-				ascFileName = getFileName(mftRecAttrib, mftBuffer, attribOffset);
+				utf8FileName = getFileName(mftRecAttrib, mftBuffer, attribOffset);
 				/* Check if fileName == $MFT, set toggle */
-				if( strcmp(ascFileName, "$MFT" ) == 0 ) {
+				if( strcmp(utf8FileName, "$MFT" ) == 0 ) {
 					isMFTFile = true;
 				} else {
 					isMFTFile = false;
@@ -355,17 +354,17 @@ int main(int argc, char* argv[]) {
 				/*If this is it, then extract it to a local file*/
 				if(isMFTFile && (mftRecAttrib->dwType == DATA)) {
 					printf("\t$MFT meta file found.\n");
-					uint8_t fileNameLen = snprintf(NULL, 0, "%s%d", ascFileName , workingPartition) + 1; // \0 terminated
+					uint8_t fileNameLen = snprintf(NULL, 0, "%s%d", utf8FileName , workingPartition) + 1; // \0 terminated
 					char * mFTfileName = malloc( fileNameLen );
 
-					snprintf(mFTfileName, fileNameLen, "%s%d.data", ascFileName, workingPartition);
+					snprintf(mFTfileName, fileNameLen, "%s%d.data", utf8FileName, workingPartition);
 					if((MFT_offline_copy = fopen(mFTfileName, "w+")) == NULL) {/*Open/create file, r/w pointer at start */
 						int errsv = errno;
-						printf("Failed to create local file for storing %s: %s.\n", ascFileName, strerror(errsv));
+						printf("Failed to create local file for storing %s: %s.\n", utf8FileName, strerror(errsv));
 						return EXIT_FAILURE;
 					}
 					if(countRuns > 1) {
-						printf("\t%s is fragmented on disk, located %u fragments.\n", ascFileName, countRuns);
+						printf("\t%s is fragmented on disk, located %u fragments.\n", utf8FileName, countRuns);
 					}
 					printf("\tWriting DATA attribute to local %s file\n", mFTfileName);
 					free(mFTfileName);
@@ -430,13 +429,14 @@ int main(int argc, char* argv[]) {
 				free(offs_len_bitField);
 				//free(p_head); Can't free this yet.
 			}
+			if(DEBUG && VERBOSE) printf("attribOffset: %u", attribOffset);
 			attribOffset += mftRecAttrib->dwFullLength; /*Increment the offset by the length of this attribute */
 			free(mftRecAttrib);
 		} while( attribOffset+MFT_FILE_ATTR_PAD < mftMetaMFT->dwRecLength ); /*While there are attributes left to inspect */
 
 		free(mftRecAttribTemp);
-		if(ascFileName != NULL) {
-			free(ascFileName);
+		if(utf8FileName != NULL) {
+			free(utf8FileName);
 		}
 		free(nTFS_Boot);		/*Free Boot sector memory */
 		free(mftMetaMFT);		/*File record buffer */
@@ -490,7 +490,7 @@ int main(int argc, char* argv[]) {
 		}
 		/*Fragment records keep track of the MFT fragment from which records originated */
 		/*Each fragment record starts with signature 'FRAG', check this */
-		if(mftFileH->fileSignature[0] == 'F' &&
+		if(		mftFileH->fileSignature[0] == 'F' &&
 				mftFileH->fileSignature[1] == 'R' &&
 				mftFileH->fileSignature[2] == 'A' &&
 				mftFileH->fileSignature[3] == 'G') {
@@ -525,7 +525,7 @@ int main(int argc, char* argv[]) {
 				if(mftRecAttrTmp->dwFullLength > MFT_RECORD_LENGTH-attrOffset) {
 					if(DEBUG) {
 						printf("Bad record attribute:\n");
-						getMFTAttribMembers(buff,mftRecAttrTmp);
+						getFileAttribMembers(buff,mftRecAttrTmp);
 						printf("%s\n", buff);
 					}
 					countBadAttr++;
@@ -615,8 +615,8 @@ int main(int argc, char* argv[]) {
 			/* At this point we have all of the attributes and need to do something with them */
 			/*Check file flags on record, determine record type */
 			uint16_t mftFlags = mftFileH->wFlags;
-			if(mftFlags==IN_USE) {	/*This is a file record */
 
+			if(mftFlags==IN_USE) {	/*This is a file record */
 				if(hasDataAttr) {	/*And it has $DATA */
 					countFiles++;
 					int64_t d64DataOffset = d64segAbsMFTOffset;
@@ -756,7 +756,7 @@ int main(int argc, char* argv[]) {
 			break;
 		case SRCH_FOR_MFTO : ;	/* Search offline MFT records using record sector offset */
 			while( strcmp((searchTerm = getSearchTerm()), EXIT_CMD) != 0 ) {
-				File * found = searchFiles(offl_files, SRCH_OFFS, searchTerm);
+				File * found = searchFiles(offl_files, SRCH_CROFFS, searchTerm);
 				if(found) {
 					freeFilesList(found);
 				} else {
@@ -798,7 +798,7 @@ int main(int argc, char* argv[]) {
 						/*- NOTE: Some attributes(deleted files?) have impossible record lengths, this breaks things -*/
 						if(mftRecAttrTmp->dwFullLength > MFT_RECORD_LENGTH-attrOffset) {
 							printf("Bad record attribute:\n");
-							getMFTAttribMembers(buff,mftRecAttrTmp);
+							getFileAttribMembers(buff,mftRecAttrTmp);
 							printf("%s\n", buff);
 							break;
 						}
@@ -878,7 +878,7 @@ int main(int argc, char* argv[]) {
 								if(mftRecAttrTmp->dwFullLength > MFT_RECORD_LENGTH-attrOffs) {
 									if(DEBUG) {
 										printf("Bad record attribute:\n");
-										getMFTAttribMembers(buff,mftRecAttrTmp);
+										getFileAttribMembers(buff,mftRecAttrTmp);
 										printf("%s\n", buff);
 									}
 									countBadAttr++;
@@ -998,7 +998,6 @@ int main(int argc, char* argv[]) {
 
 	return EXIT_SUCCESS;
 } //end of main method.
-
 
 /**
  * Calls lseek(.. with error checking, absolute position mode.
